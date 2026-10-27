@@ -23,11 +23,13 @@ public class ReaderService extends NotificationListenerService {
   private boolean ready;
   private boolean callBlocked;
   private boolean quietActive;
+  private boolean replyComposing;
   private final Runnable quietTick =
       new Runnable() {
         @Override
         public void run() {
           enforceQuietHours();
+          enforceReplyComposition();
           handler.postDelayed(this, 1000);
         }
       };
@@ -35,6 +37,8 @@ public class ReaderService extends NotificationListenerService {
   private final android.content.SharedPreferences.OnSharedPreferenceChangeListener
       permissionChanged =
           (prefs, key) -> {
+            if ("reply_composing_until".equals(key))
+              this.handler.post(this::enforceReplyComposition);
             if ("enabled".equals(key) && !prefs.getBoolean("enabled", true))
               this.handler.post(this::stopAllAlerts);
             if ("refresh_call_monitor".equals(key) && callMonitor != null) callMonitor.start();
@@ -122,7 +126,10 @@ public class ReaderService extends NotificationListenerService {
             handler.post(
                 () -> {
                   MissedReadouts.Entry event = utteranceEvents.remove(id);
-                  if (success && event != null) MissedStore.remove(ReaderService.this, event.id);
+                  if (success && event != null) {
+                    MissedStore.remove(ReaderService.this, event.id);
+                    ReplyRegistry.offerAfterReadout(ReaderService.this, event.id);
+                  }
                   speechBacklog.complete(id);
                   speakNext();
                 });
@@ -132,6 +139,7 @@ public class ReaderService extends NotificationListenerService {
 
   private void speakNext() {
     if (!ready
+        || ReplyRegistry.composing(this)
         || QuietHours.active(this)
         || callBlocked
         || (callMonitor != null && callMonitor.isBlocked())) return;
@@ -250,6 +258,7 @@ public class ReaderService extends NotificationListenerService {
     String conversation = pkg + "|" + Rules.normalize(match.value);
     boolean fresh = history.accept(conversation, body, messageTime);
     persistHistory();
+    if (!baseline && fresh) ReplyRegistry.revokeStream(this, conversation);
     if (baseline
         || !fresh
         || !Rules.prefs(this).getBoolean("enabled", true)
@@ -264,6 +273,7 @@ public class ReaderService extends NotificationListenerService {
             body,
             System.currentTimeMillis(),
             isReaction);
+    ReplyRegistry.capture(this, sbn, match, event.id, conversation, body);
     // Save immediately, before the sound delay or per-sender queue replacement.
     if (match.speech
         && !(isReaction && Rules.prefs(this).getBoolean("mute_reactions", false))
@@ -377,6 +387,19 @@ public class ReaderService extends NotificationListenerService {
     speakNext();
   }
 
+  private void enforceReplyComposition() {
+    boolean composing = ReplyRegistry.composing(this);
+    if (composing && !replyComposing) {
+      speechBacklog.pause();
+      utteranceEvents.clear();
+      if (tts != null) tts.stop();
+      if (ring != null) ring.stop();
+    }
+    boolean resume = replyComposing && !composing;
+    replyComposing = composing;
+    if (resume) handler.post(this::speakNext);
+  }
+
   private void enforceQuietHours() {
     boolean quiet = QuietHours.active(this);
     if (quiet && !quietActive) {
@@ -386,6 +409,7 @@ public class ReaderService extends NotificationListenerService {
   }
 
   private void stopAllAlerts() {
+    ReplyRegistry.clear(this);
     speechBacklog.clear();
     utteranceEvents.clear();
     latest.replaceAll((sender, generation) -> ++sequence);
@@ -397,10 +421,16 @@ public class ReaderService extends NotificationListenerService {
         .apply();
   }
 
+  @Override
+  public void onNotificationRemoved(StatusBarNotification sbn) {
+    ReplyRegistry.revokeNotification(this, sbn.getKey());
+  }
+
   private boolean audibleAllowed() {
     AudioManager audio = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
     NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-    return !QuietHours.active(this)
+    return !ReplyRegistry.composing(this)
+        && !QuietHours.active(this)
         && audio.getRingerMode() == AudioManager.RINGER_MODE_NORMAL
         && nm.getCurrentInterruptionFilter() == NotificationManager.INTERRUPTION_FILTER_ALL;
   }

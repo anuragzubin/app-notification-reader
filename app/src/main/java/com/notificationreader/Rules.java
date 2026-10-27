@@ -14,7 +14,7 @@ final class Rules {
 
   static final class Rule {
     final String type, value, label, alias;
-    final boolean sound, speech, readSender, readMessage;
+    final boolean sound, speech, readSender, readMessage, voiceReply;
 
     Rule(String t, String v, String l, String a) {
       this(t, v, l, a, true, true);
@@ -32,6 +32,19 @@ final class Rules {
         boolean sound,
         boolean readSender,
         boolean readMessage) {
+      this(t, v, l, a, sound, readSender, readMessage, false);
+    }
+
+    Rule(
+        String t,
+        String v,
+        String l,
+        String a,
+        boolean sound,
+        boolean readSender,
+        boolean readMessage,
+        boolean voiceReply) {
+      this.voiceReply = t.equals("WhatsApp") && voiceReply;
       this.sound = sound;
       this.readSender = readSender;
       this.readMessage = readMessage;
@@ -59,7 +72,8 @@ final class Rules {
                 o.optBoolean("read_sender", o.optBoolean("speech", true)),
                 o.optBoolean(
                     "read_message",
-                    o.optBoolean("speech", true) && prefs(c).getBoolean("preview", true))));
+                    o.optBoolean("speech", true) && prefs(c).getBoolean("preview", true)),
+                o.optBoolean("voice_reply", false)));
       }
     } catch (org.json.JSONException ignored) {
     }
@@ -79,6 +93,7 @@ final class Rules {
         o.put("speech", r.speech);
         o.put("read_sender", r.readSender);
         o.put("read_message", r.readMessage);
+        o.put("voice_reply", r.voiceReply);
         a.put(o);
       }
     } catch (org.json.JSONException e) {

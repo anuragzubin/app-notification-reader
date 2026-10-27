@@ -1,6 +1,6 @@
 # Priority Voice for Android
 
-[Download Priority Voice v1.7 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v1.7.apk)
+[Download Priority Voice v1.8 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v1.8.apk)
 
 Install over the previous version to retain your saved senders and settings. The signed APK is stored in `releases/`, with its checksum in `releases/SHA256SUMS`. This is a personal-testing debug build.
 
@@ -115,3 +115,21 @@ Phone checks: apply a short daytime interval spanning the next few minutes, veri
 **Alerts for all contacts** is available on Home and above the Senders list. Both views use the same saved master preference. Switching off immediately stops current app speech and sound, cancels queued/delayed live readouts and pending manual replay requests, and suppresses new Priority Voice alerts for every saved WhatsApp/email sender. Your individual sender controls, quiet-hour times, and saved missed-readout history remain intact. Switching on enables new alerts according to each sender's controls and quiet hours, without replaying notifications that arrived while off. The choice persists after restarting the app. It controls Priority Voice, not WhatsApp/Gmail's own notification settings.
 
 Device check: switch off mid-readout, confirm speech and sound stop, receive matching messages from multiple senders while off, then switch on. Only new eligible notifications should sound/read; the earlier suppressed messages must not replay. Navigate between Home and Senders to confirm the same saved switch state, and restart the app to verify persistence.
+
+## Version 1.8 — optional WhatsApp replies by voice
+
+On **Senders**, enable **Reply by voice** for each desired WhatsApp sender. It defaults off for existing and new contacts and is not available for email rules. Other sender preferences are preserved when this switch changes. Android 13+ asks for notification permission so Priority Voice can show a silent reply prompt after an eligible readout finishes.
+
+1. Receive a new **direct** WhatsApp / WhatsApp Business message from that sender and let its readout finish.
+2. Tap Priority Voice's **Reply to [sender]** notification. Alternatively, open Senders and use **Reply to latest readout** on that contact's card.
+3. Check the recipient, WhatsApp app, and source message preview. Tap **Dictate reply**. The phone's speech-recognition activity transcribes the reply; if unavailable, type it into the editable draft.
+4. The app reads the draft back when its speech engine is ready and sound is allowed. Edit any transcription errors or use **Read draft aloud**.
+5. Tap **Review & send**, then **Send** in the explicit confirmation dialog. Canceling, dictating, editing, or playing a draft never sends anything.
+
+This sends **text transcribed from speech**, not a WhatsApp audio voice note. It uses WhatsApp's notification `RemoteInput` Reply action. A successful handoff is reported as “Reply handed to WhatsApp”; WhatsApp controls actual delivery. The app never launches the microphone automatically in the background or bypasses the lock screen. Dictation uses the installed recognition provider, which may process audio online despite the offline preference; Priority Voice itself still has no Internet permission and does not store recordings.
+
+For recipient accuracy, replies require an explicit non-group notification flag, a semantic Reply action with free-form text, and a PendingIntent created by the originating WhatsApp package. Group chats and notifications with ambiguous group metadata are not supported. Changing/removing the WhatsApp notification invalidates its reply capability. Reply sessions expire after 15 minutes, are held only in memory, and do not survive the app process restarting. Old saved missed-readout previews do not recreate a cleared notification's Reply action. No post-readout reply prompt appears unless the original live notification still offers the required action.
+
+Current contact opt-in, global enable, quiet hours, phone lock, and call state are checked before dictation and confirmation. Outgoing confirmation is foreground and requires an unlocked phone. Readouts pause while composing/dictating; they resume afterward according to existing sender and schedule rules. If a call begins, draft readback stops and active dictation is canceled where the recognition provider supports it. Final send is blocked during calls. Turning the per-contact switch off invalidates that contact's pending reply prompts. Android notification permission affects prompts; the in-app reply button remains usable after a qualifying readout when the prompt permission was denied.
+
+Tests cover exact-draft confirmation, editing invalidation, empty drafts, duplicate send attempts, and confirmation after retry. No actual WhatsApp reply has been sent from the cloud environment. Phone validation is required: enable one contact, receive a direct message, let it finish, dictate a harmless test reply, edit it, cancel once, then explicitly confirm Send to a consenting test recipient. Verify disabled contacts and groups do not offer replies, changes/clearance expire actions, and calls/quiet hours prevent recording or sending. Verify separate sound/name/message switches still work after changing reply opt-in.

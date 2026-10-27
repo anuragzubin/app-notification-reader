@@ -620,7 +620,7 @@ public class MainActivity extends Activity {
             + " is kept. Silent mode and Do Not Disturb are respected.");
     action(privacy, "Sender matching & Samsung tips", false, v -> showHelp());
     gap(layout, 8);
-    layout.addView(label("PRIORITY VOICE  /  1.7", 11, R.color.muted, true));
+    layout.addView(label("PRIORITY VOICE  /  1.8", 11, R.color.muted, true));
   }
 
   private void render() {
@@ -671,6 +671,61 @@ public class MainActivity extends Activity {
           (button, checked) -> updateAlerts(r, sound.isChecked(), checked, message.isChecked()));
       message.setOnCheckedChangeListener(
           (button, checked) -> updateAlerts(r, sound.isChecked(), sender.isChecked(), checked));
+      if (r.type.equals("WhatsApp")) {
+        Switch reply =
+            toggle(
+                c,
+                "Reply by voice",
+                "Dictate a text reply, review it, then confirm sending.",
+                r.label,
+                r.voiceReply);
+        reply.setOnCheckedChangeListener(
+            (button, checked) -> {
+              List<Rules.Rule> saved = Rules.load(this);
+              for (int index = 0; index < saved.size(); index++) {
+                Rules.Rule item = saved.get(index);
+                if (item.type.equals(r.type) && item.value.equals(r.value)) {
+                  saved.set(
+                      index,
+                      new Rules.Rule(
+                          item.type,
+                          item.value,
+                          item.label,
+                          item.alias,
+                          item.sound,
+                          item.readSender,
+                          item.readMessage,
+                          checked));
+                  break;
+                }
+              }
+              Rules.save(this, saved);
+              if (checked
+                  && android.os.Build.VERSION.SDK_INT >= 33
+                  && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                      != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                requestPermissions(
+                    new String[] {android.Manifest.permission.POST_NOTIFICATIONS}, 74);
+              if (!checked) ReplyRegistry.revokeContact(this, r.value);
+            });
+        action(
+            c,
+            "Reply to latest readout",
+            false,
+            v -> {
+              ReplyRegistry.Target target = ReplyRegistry.forContact(this, r.value);
+              if (target == null) {
+                Toast.makeText(
+                        this,
+                        "No reply is available. Enable Reply by voice, then receive a new direct"
+                            + " WhatsApp message with a Reply action and let its readout finish.",
+                        Toast.LENGTH_LONG)
+                    .show();
+                return;
+              }
+              startActivity(new Intent(this, ReplyActivity.class).putExtra("token", target.token));
+            });
+      }
       Button remove =
           action(
               c,
@@ -874,7 +929,10 @@ public class MainActivity extends Activity {
     for (int i = 0; i < current.size(); i++) {
       Rules.Rule r = current.get(i);
       if (r.type.equals(rule.type) && r.value.equals(rule.value)) {
-        current.set(i, new Rules.Rule(r.type, r.value, r.label, r.alias, sound, sender, message));
+        current.set(
+            i,
+            new Rules.Rule(
+                r.type, r.value, r.label, r.alias, sound, sender, message, r.voiceReply));
         Rules.save(this, current);
         return;
       }
