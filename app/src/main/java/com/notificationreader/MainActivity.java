@@ -37,11 +37,14 @@ public class MainActivity extends Activity {
   private android.media.Ringtone testRing;
   private int page;
   private String query = "";
-  private TextView missedCount, handsFreeStatus;
+  private TextView missedCount, handsFreeStatus, readoutHealth;
   private Button missedPlay;
   private final android.content.SharedPreferences.OnSharedPreferenceChangeListener missedChanged =
       (prefs, key) -> {
         if (MissedStore.KEY.equals(key)) updateMissedCount();
+        if ("reader_heartbeat".equals(key)
+            || "readout_status".equals(key)
+            || "last_notification_check".equals(key)) updateReadoutHealth();
         if ("hands_free_running".equals(key) || "hands_free_error".equals(key))
           updateHandsFreeStatus();
       };
@@ -180,18 +183,13 @@ public class MainActivity extends Activity {
       page = state.getInt("page", 0);
       query = state.getString("query", "");
     }
-    tts =
-        new TextToSpeech(
-            this,
-            result -> {
-              speechReady = result == TextToSpeech.SUCCESS;
-              if (speechReady)
-                tts.setAudioAttributes(
-                    new android.media.AudioAttributes.Builder()
-                        .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION)
-                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build());
-            });
+    // Ignore/remove pause timestamps left by older app versions.
+    Rules.prefs(this)
+        .edit()
+        .remove("reply_composing_until")
+        .remove("hands_free_composing_until")
+        .apply();
+    initializeTestSpeech();
     testCallMonitor =
         new CallMonitor(
             this,
@@ -252,6 +250,7 @@ public class MainActivity extends Activity {
     list = null;
     missedCount = null;
     handsFreeStatus = null;
+    readoutHealth = null;
     missedPlay = null;
     TextView eyebrow = label("P R I O R I T Y   V O I C E", 11, R.color.accent, true);
     eyebrow.setContentDescription("Priority Voice");
@@ -318,6 +317,85 @@ public class MainActivity extends Activity {
     } else layout.setAlpha(1f);
   }
 
+  private void initializeTestSpeech() {
+    speechReady = false;
+    tts =
+        new TextToSpeech(
+            this,
+            result -> {
+              speechReady = result == TextToSpeech.SUCCESS;
+              if (speechReady)
+                tts.setAudioAttributes(
+                    new android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build());
+            });
+  }
+
+  private void updateReadoutHealth() {
+    if (readoutHealth == null) return;
+    long last = Rules.prefs(this).getLong("reader_heartbeat", 0);
+    String state =
+        !notificationsAllowed()
+            ? "Notification access is off."
+            : (last == 0 || System.currentTimeMillis() - last > 15000)
+                ? "No recent listener connection. Reconnect notification access."
+                : Rules.prefs(this).getString("readout_status", "Starting notification readouts…");
+    if (last > 0 && System.currentTimeMillis() - last <= 15000) {
+      if (!Rules.prefs(this).getBoolean("enabled", true)) state = "All-contact alerts are off.";
+      else if (QuietHours.active(this)) state = "Quiet hours are active.";
+      else if (AudioSessions.busy())
+        state = "Paused for an active reply. Readouts resume when it ends.";
+    }
+    readoutHealth.setText(
+        state
+            + "\n"
+            + Rules.prefs(this)
+                .getString("last_notification_check", "Waiting for a new matching notification."));
+  }
+
+  private void readoutHealthCard() {
+    LinearLayout health = card(layout);
+    health.addView(label("Readout status", 18, R.color.ink, true));
+    readoutHealth = label("", 14, R.color.muted, false);
+    health.addView(readoutHealth);
+    updateReadoutHealth();
+    action(
+        health,
+        "Reset audio & reconnect",
+        false,
+        v -> {
+          stopService(new Intent(this, HandsFreeService.class));
+          AudioSessions.clear(this);
+          if (testRing != null) testRing.stop();
+          if (tts != null) {
+            tts.stop();
+            tts.shutdown();
+          }
+          initializeTestSpeech();
+          Rules.prefs(this)
+              .edit()
+              .remove("reply_composing_until")
+              .remove("hands_free_composing_until")
+              .putLong("audio_reset_requested", System.nanoTime())
+              .apply();
+          android.service.notification.NotificationListenerService.requestRebind(
+              new android.content.ComponentName(this, ReaderService.class));
+          Toast.makeText(
+                  this,
+                  "Audio reset requested. Hands-free is stopped. Send a new WhatsApp or email"
+                      + " notification to test readouts.",
+                  Toast.LENGTH_LONG)
+              .show();
+        });
+    action(
+        health,
+        "Notification access settings",
+        false,
+        v -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
+  }
+
   private void masterSwitch(LinearLayout parent) {
     Switch all =
         toggle(
@@ -360,6 +438,7 @@ public class MainActivity extends Activity {
           page = 2;
           showPage(true);
         });
+    readoutHealthCard();
     LinearLayout access = card(layout);
     boolean ready = notificationsAllowed();
     copy(
@@ -725,7 +804,7 @@ public class MainActivity extends Activity {
             + " is kept. Silent mode and Do Not Disturb are respected.");
     action(privacy, "Sender matching & Samsung tips", false, v -> showHelp());
     gap(layout, 8);
-    layout.addView(label("PRIORITY VOICE  /  2.0", 11, R.color.muted, true));
+    layout.addView(label("PRIORITY VOICE  /  2.1", 11, R.color.muted, true));
   }
 
   private void render() {

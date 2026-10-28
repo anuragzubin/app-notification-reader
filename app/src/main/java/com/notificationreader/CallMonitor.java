@@ -13,7 +13,7 @@ import android.telephony.TelephonyManager;
 import java.util.*;
 import java.util.function.Consumer;
 
-/** Monitors both SIMs; audio mode also covers many VoIP calls (best effort). */
+/** Monitors both SIMs and Telecom calls; recording/communication mode alone is not a call. */
 final class CallMonitor {
   private final Context context;
   private final Handler handler;
@@ -68,6 +68,7 @@ final class CallMonitor {
             manager.listen(listener, PhoneStateListener.LISTEN_CALL_STATE);
             listeners.put(manager, listener);
           } catch (SecurityException | UnsupportedOperationException ignored) {
+            states.remove(manager);
           }
         }
       }
@@ -78,11 +79,18 @@ final class CallMonitor {
   void update() {
     AudioManager audio = context.getSystemService(AudioManager.class);
     int mode = audio == null ? AudioManager.MODE_NORMAL : audio.getMode();
-    boolean now =
-        mode == AudioManager.MODE_RINGTONE
-            || mode == AudioManager.MODE_IN_CALL
-            || mode == AudioManager.MODE_IN_COMMUNICATION;
-    for (int state : states.values()) now |= state != TelephonyManager.CALL_STATE_IDLE;
+    boolean cellular = false, telecom = false;
+    for (int state : states.values()) cellular |= state != TelephonyManager.CALL_STATE_IDLE;
+    if (context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
+        == PackageManager.PERMISSION_GRANTED) {
+      try {
+        android.telecom.TelecomManager manager =
+            context.getSystemService(android.telecom.TelecomManager.class);
+        telecom = manager != null && manager.isInCall();
+      } catch (SecurityException ignored) {
+      }
+    }
+    boolean now = CallStatePolicy.blocks(cellular, telecom, mode);
     if (now != blocked) {
       blocked = now;
       changed.accept(now);

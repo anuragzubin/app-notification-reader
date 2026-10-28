@@ -23,7 +23,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
   private int errors, attempts;
   private final android.content.SharedPreferences.OnSharedPreferenceChangeListener readoutChanged =
       (prefs, key) -> {
-        if ("reader_speaking_until".equals(key) && readerSpeaking()) cancelRecognition();
+        if ("reader_speaking_until".equals(key) && readerSpeaking()) releaseMicrophone();
         if ("reply_offer_token".equals(key)) collectOffer();
         if ("reply_route_revision".equals(key)) discardInvalidOffers();
         if ("auto_reply_offer".equals(key) && !prefs.getBoolean("auto_reply_offer", true)) {
@@ -31,13 +31,14 @@ public class HandsFreeService extends Service implements RecognitionListener {
           if (flow.stage == HandsFreeFlow.Stage.OFFER) cancelConversation();
         }
       };
-  private long lastResult, renew;
+  private long lastResult, renew, turnDeadline;
+  private final String audioOwner = "hands-free:" + UUID.randomUUID();
   private final Runnable tick =
       new Runnable() {
         public void run() {
           if (closed) return;
           boolean allowed = allowed();
-          if (readerSpeaking() && listening) cancelRecognition();
+          if (readerSpeaking() && listening) releaseMicrophone();
           if (!allowed && !paused) {
             paused = true;
             cancelRecognition();
@@ -54,8 +55,14 @@ public class HandsFreeService extends Service implements RecognitionListener {
             notice("Listening · say Send text to a listed contact.");
             scheduleListen(700);
           }
-          if (flow.stage != HandsFreeFlow.Stage.COMMAND && System.currentTimeMillis() > renew)
-            hold(true);
+          if ((speaking || flow.stage != HandsFreeFlow.Stage.COMMAND)
+              && SystemClock.elapsedRealtime() > turnDeadline
+              && turnDeadline > 0) {
+            cancelConversation();
+            notice("Reply timed out. Notification readouts are available again.");
+          }
+          if ((speaking || flow.stage != HandsFreeFlow.Stage.COMMAND)
+              && SystemClock.elapsedRealtime() > renew) hold(true);
           if (listening && SystemClock.elapsedRealtime() - lastResult > 30000) {
             cancelRecognition();
             flow.reset();
@@ -151,14 +158,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
       fail("No speech recognition provider is installed. Check Android voice input settings.");
       return;
     }
-    try {
-      if (Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(this))
-        recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(this);
-      else recognizer = SpeechRecognizer.createSpeechRecognizer(this);
-    } catch (UnsupportedOperationException e) {
-      recognizer = SpeechRecognizer.createSpeechRecognizer(this);
-    }
-    recognizer.setRecognitionListener(this);
+    createRecognizer();
     tts =
         new TextToSpeech(
             this,
@@ -206,6 +206,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
   private void finishPrompt(String id) {
     if (!id.equals(promptId) || closed) return;
     speaking = false;
+    turnDeadline = SystemClock.elapsedRealtime() + 30000;
     if (flow.stage == HandsFreeFlow.Stage.COMMAND) hold(false);
     scheduleListen(650);
   }
@@ -217,8 +218,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
         || QuietHours.active(this)
         || !Rules.prefs(this).getBoolean("enabled", true)) return false;
     if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
-        || Rules.prefs(this).getLong("reply_composing_until", 0) > System.currentTimeMillis())
-      return false;
+        || AudioSessions.busyExcept(audioOwner)) return false;
     AudioManager a = getSystemService(AudioManager.class);
     return a.getRingerMode() == AudioManager.RINGER_MODE_NORMAL
         && getSystemService(NotificationManager.class).getCurrentInterruptionFilter()
@@ -246,10 +246,30 @@ public class HandsFreeService extends Service implements RecognitionListener {
     try {
       listening = true;
       lastResult = SystemClock.elapsedRealtime();
+      if (recognizer == null) createRecognizer();
       recognizer.startListening(speech);
     } catch (SecurityException | IllegalStateException e) {
       listening = false;
       fail("Microphone unavailable. Start hands-free mode again from the app.");
+    }
+  }
+
+  private void createRecognizer() {
+    try {
+      if (Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(this))
+        recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(this);
+      else recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+    } catch (UnsupportedOperationException e) {
+      recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+    }
+    recognizer.setRecognitionListener(this);
+  }
+
+  private void releaseMicrophone() {
+    cancelRecognition();
+    if (recognizer != null) {
+      recognizer.destroy();
+      recognizer = null;
     }
   }
 
@@ -268,21 +288,28 @@ public class HandsFreeService extends Service implements RecognitionListener {
     }
     hold(true);
     speaking = true;
+    turnDeadline =
+        SystemClock.elapsedRealtime() + Math.min(120000, Math.max(15000, words.length() * 100L));
     promptId = UUID.randomUUID().toString();
     notice(words);
-    if (tts.speak(words, TextToSpeech.QUEUE_FLUSH, null, promptId) == TextToSpeech.ERROR) {
-      speaking = false;
-      hold(false);
-      stopSelf();
-    }
+    final String id = promptId;
+    ReadoutHandoff.start(
+        handler::postDelayed,
+        this::releaseMicrophone,
+        () -> !closed && ready && id.equals(promptId) && allowed(),
+        () -> {
+          if (tts.speak(words, TextToSpeech.QUEUE_FLUSH, null, id) == TextToSpeech.ERROR) {
+            speaking = false;
+            hold(false);
+            stopSelf();
+          }
+        });
   }
 
   private void hold(boolean active) {
-    renew = System.currentTimeMillis() + 30000;
-    Rules.prefs(this)
-        .edit()
-        .putLong("hands_free_composing_until", active ? System.currentTimeMillis() + 120000 : 0)
-        .apply();
+    renew = SystemClock.elapsedRealtime() + 10000;
+    if (active) AudioSessions.hold(this, audioOwner);
+    else AudioSessions.release(this, audioOwner);
   }
 
   private void handle(String words) {

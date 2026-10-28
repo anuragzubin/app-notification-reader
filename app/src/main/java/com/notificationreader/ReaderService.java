@@ -21,7 +21,10 @@ import org.json.JSONObject;
 public class ReaderService extends NotificationListenerService {
   private TextToSpeech tts;
   private boolean ready;
-  private String speakingId;
+  private String speakingId, startedId;
+  private long engineGeneration, nextHeartbeat;
+  private int recoveryAttempts;
+  private boolean listenerConnected;
   private boolean callBlocked;
   private boolean quietActive;
   private boolean replyComposing;
@@ -29,6 +32,13 @@ public class ReaderService extends NotificationListenerService {
       new Runnable() {
         @Override
         public void run() {
+          if (System.currentTimeMillis() >= nextHeartbeat) {
+            nextHeartbeat = System.currentTimeMillis() + 5000;
+            Rules.prefs(ReaderService.this)
+                .edit()
+                .putLong("reader_heartbeat", listenerConnected ? System.currentTimeMillis() : 0)
+                .apply();
+          }
           enforceQuietHours();
           enforceReplyComposition();
           handler.postDelayed(this, 1000);
@@ -38,7 +48,8 @@ public class ReaderService extends NotificationListenerService {
   private final android.content.SharedPreferences.OnSharedPreferenceChangeListener
       permissionChanged =
           (prefs, key) -> {
-            if ("reply_composing_until".equals(key) || "hands_free_composing_until".equals(key))
+            if ("audio_reset_requested".equals(key)) this.handler.post(this::resetAudio);
+            if ("audio_session_revision".equals(key))
               this.handler.post(this::enforceReplyComposition);
             if ("enabled".equals(key) && !prefs.getBoolean("enabled", true))
               this.handler.post(this::stopAllAlerts);
@@ -64,25 +75,7 @@ public class ReaderService extends NotificationListenerService {
     clearSpeaking();
     restoreHistory("identities", history.identities);
     restoreHistory("newest", history.newest);
-    tts =
-        new TextToSpeech(
-            this,
-            s -> {
-              ready = s == TextToSpeech.SUCCESS;
-              if (ready) {
-                handler.post(
-                    () -> {
-                      replayMissed();
-                      speakNext();
-                    });
-                tts.setAudioAttributes(
-                    new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build());
-              }
-            });
-    configureSpeechCallbacks();
+    initializeSpeech();
     callMonitor =
         new CallMonitor(
             this,
@@ -90,6 +83,7 @@ public class ReaderService extends NotificationListenerService {
             blocked -> {
               callBlocked = blocked;
               if (blocked) {
+                status("Paused for a phone call");
                 rememberQueued();
                 speechBacklog.pause();
                 tts.stop();
@@ -109,23 +103,97 @@ public class ReaderService extends NotificationListenerService {
     quietTick.run();
   }
 
+  private void status(String value) {
+    if (!value.equals(Rules.prefs(this).getString("readout_status", "")))
+      Rules.prefs(this).edit().putString("readout_status", value).apply();
+  }
+
+  private void initializeSpeech() {
+    final long generation = ++engineGeneration;
+    ready = false;
+    status("Starting speech engine…");
+    tts =
+        new TextToSpeech(
+            this,
+            result -> {
+              if (generation != engineGeneration) return;
+              ready = result == TextToSpeech.SUCCESS;
+              if (!ready) {
+                status("Speech engine could not initialize. Tap Reset audio & reconnect.");
+                return;
+              }
+              tts.setAudioAttributes(
+                  new AudioAttributes.Builder()
+                      .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                      .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                      .build());
+              status("Speech engine ready");
+              handler.post(
+                  () -> {
+                    replayMissed();
+                    speakNext();
+                  });
+            });
+    configureSpeechCallbacks(generation);
+  }
+
+  private void resetAudio() {
+    speechBacklog.pause();
+    utteranceEvents.clear();
+    clearSpeaking();
+    ++engineGeneration;
+    if (tts != null) {
+      tts.stop();
+      tts.shutdown();
+    }
+    recoveryAttempts = 0;
+    if (callMonitor != null) callMonitor.start();
+    initializeSpeech();
+  }
+
+  private void playbackFailed(String id, String reason) {
+    if (!speechBacklog.isActive(id)) return;
+    speechBacklog.pause();
+    utteranceEvents.remove(id);
+    clearSpeaking();
+    ready = false;
+    status(reason + ". Tap Reset audio & reconnect if it persists.");
+    if (recoveryAttempts++ < 1) {
+      final long failedGeneration = engineGeneration;
+      handler.postDelayed(
+          () -> {
+            if (failedGeneration == engineGeneration) resetEngineForRetry();
+          },
+          700);
+    }
+  }
+
+  private void resetEngineForRetry() {
+    ++engineGeneration;
+    if (tts != null) {
+      tts.stop();
+      tts.shutdown();
+    }
+    initializeSpeech();
+  }
+
   private void clearSpeaking() {
     speakingId = null;
+    startedId = null;
     Rules.prefs(this).edit().putLong("reader_speaking_until", 0).apply();
   }
 
-  private void configureSpeechCallbacks() {
+  private void configureSpeechCallbacks(final long generation) {
     tts.setOnUtteranceProgressListener(
         new UtteranceProgressListener() {
           @Override
           public void onStart(String id) {
             handler.post(
                 () -> {
+                  if (generation != engineGeneration || !speechBacklog.isActive(id)) return;
                   speakingId = id;
-                  Rules.prefs(ReaderService.this)
-                      .edit()
-                      .putLong("reader_speaking_until", System.currentTimeMillis() + 120000)
-                      .apply();
+                  startedId = id;
+                  status("Reading a matched notification");
                 });
           }
 
@@ -136,17 +204,41 @@ public class ReaderService extends NotificationListenerService {
 
           @Override
           public void onError(String id) {
-            finish(id, false);
+            handler.post(
+                () -> {
+                  if (generation == engineGeneration)
+                    playbackFailed(id, "Speech engine reported a playback error");
+                });
+          }
+
+          @Override
+          public void onStop(String id, boolean interrupted) {
+            handler.post(
+                () -> {
+                  if (generation == engineGeneration)
+                    playbackFailed(id, "Speech engine stopped before completing the readout");
+                });
           }
 
           private void finish(String id, boolean success) {
             handler.post(
                 () -> {
+                  if (generation != engineGeneration || !speechBacklog.isActive(id)) return;
+                  recoveryAttempts = 0;
                   if (id.equals(speakingId)) clearSpeaking();
                   MissedReadouts.Entry event = utteranceEvents.remove(id);
                   if (success && event != null) {
                     MissedStore.remove(ReaderService.this, event.id);
-                    ReplyRegistry.offerAfterReadout(ReaderService.this, event.id);
+                    try {
+                      ReplyRegistry.offerAfterReadout(ReaderService.this, event.id);
+                    } catch (RuntimeException ex) {
+                      Rules.prefs(ReaderService.this)
+                          .edit()
+                          .putString(
+                              "reply_status",
+                              "Reply offer unavailable; notification reading remains enabled.")
+                          .apply();
+                    }
                   }
                   speechBacklog.complete(id);
                   speakNext();
@@ -156,13 +248,33 @@ public class ReaderService extends NotificationListenerService {
   }
 
   private void speakNext() {
-    if (!ready
-        || ReplyRegistry.composing(this)
-        || QuietHours.active(this)
-        || callBlocked
-        || (callMonitor != null && callMonitor.isBlocked())) return;
+    if (!ready) return;
+    if (!Rules.prefs(this).getBoolean("enabled", true)) {
+      status("All-contact alerts are off");
+      return;
+    }
+    if (ReplyRegistry.composing(this)) {
+      status("Paused for a reply · readouts resume when it ends");
+      return;
+    }
+    if (QuietHours.active(this)) {
+      status("Quiet hours are active");
+      return;
+    }
+    if (callBlocked || (callMonitor != null && callMonitor.isBlocked())) {
+      status("Paused for a phone call");
+      return;
+    }
+    if (speechBacklog.hasActive()) {
+      status(
+          startedId == null ? "Preparing notification readout" : "Reading a matched notification");
+      return;
+    }
     SpeechBacklog.Item next = speechBacklog.next();
-    if (next == null) return;
+    if (next == null) {
+      status("Ready for new matching notifications");
+      return;
+    }
     Rules.Rule selected = speechRules.get(next.sender);
     Rules.Rule current = selected == null ? null : currentRule(selected);
     if (!Rules.prefs(this).getBoolean("enabled", true)
@@ -176,24 +288,77 @@ public class ReaderService extends NotificationListenerService {
       handler.post(this::speakNext);
       return;
     }
-    String text =
-        SpeechText.compose(
-            current.readSender,
-            current.readMessage,
-            current.type.equals("WhatsApp") ? "WhatsApp message" : "Email",
-            current.label,
-            next.text);
     MissedReadouts.Entry event = events.get(next.sender);
     if (event != null) utteranceEvents.put(next.id, event);
-    if (tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, next.id) == TextToSpeech.ERROR) {
-      utteranceEvents.remove(next.id);
-      speechBacklog.complete(next.id);
-      handler.post(this::speakNext);
-    }
+    // Reserve audio BEFORE TTS starts: otherwise an active recognizer can retain audio
+    // focus while waiting for the TTS onStart callback that would have stopped it.
+    final long generation = engineGeneration;
+    ReadoutHandoff.start(
+        handler::postDelayed,
+        () -> {
+          speakingId = next.id;
+          startedId = null;
+          Rules.prefs(this)
+              .edit()
+              .putLong("reader_speaking_until", System.currentTimeMillis() + 180000)
+              .apply();
+          status("Preparing notification readout");
+        },
+        () -> generation == engineGeneration && speechBacklog.isActive(next.id),
+        () -> {
+          if (ReplyRegistry.composing(this)
+              || QuietHours.active(this)
+              || !Rules.prefs(this).getBoolean("enabled", true)
+              || (callMonitor != null && callMonitor.isBlocked())) {
+            speechBacklog.pause();
+            clearSpeaking();
+            return;
+          }
+          Rules.Rule permitted = currentRule(selected);
+          if (permitted == null
+              || !permitted.speech
+              || (event != null
+                  && event.reaction
+                  && Rules.prefs(this).getBoolean("mute_reactions", false))) {
+            speechBacklog.complete(next.id);
+            utteranceEvents.remove(next.id);
+            clearSpeaking();
+            handler.post(this::speakNext);
+            return;
+          }
+          String latestText =
+              SpeechText.compose(
+                  permitted.readSender,
+                  permitted.readMessage,
+                  permitted.type.equals("WhatsApp") ? "WhatsApp message" : "Email",
+                  permitted.label,
+                  next.text);
+          if (tts.speak(latestText, TextToSpeech.QUEUE_FLUSH, null, next.id)
+              == TextToSpeech.ERROR) {
+            playbackFailed(next.id, "Speech engine rejected the readout");
+            return;
+          }
+          handler.postDelayed(
+              () -> {
+                if (generation == engineGeneration
+                    && speechBacklog.isActive(next.id)
+                    && !next.id.equals(startedId))
+                  playbackFailed(next.id, "Speech engine did not start");
+              },
+              8000);
+          handler.postDelayed(
+              () -> {
+                if (generation == engineGeneration && speechBacklog.isActive(next.id))
+                  playbackFailed(next.id, "Speech engine stalled");
+              },
+              180000);
+        });
   }
 
   @Override
   public void onListenerConnected() {
+    listenerConnected = true;
+    Rules.prefs(this).edit().putLong("reader_heartbeat", System.currentTimeMillis()).apply();
     if (callMonitor != null) callMonitor.start();
     connectedAt = System.currentTimeMillis();
     // Seed undismissed notifications without playing them, including after an app update.
@@ -229,6 +394,12 @@ public class ReaderService extends NotificationListenerService {
                 "com.fsck.k9")
             .contains(pkg);
     if (!whatsapp && !email) return;
+    Rules.prefs(this)
+        .edit()
+        .putString(
+            "last_notification_check",
+            whatsapp ? "WhatsApp notification received" : "Email notification received")
+        .apply();
     Notification n = sbn.getNotification();
     if ((n.flags & Notification.FLAG_GROUP_SUMMARY) != 0 || n.extras == null) return;
     Bundle e = n.extras;
@@ -269,14 +440,30 @@ public class ReaderService extends NotificationListenerService {
         }
       if (match != null) break;
     }
-    if (match == null || body.trim().isEmpty()) return;
+    if (match == null || body.trim().isEmpty()) {
+      Rules.prefs(this)
+          .edit()
+          .putString(
+              "last_notification_check",
+              match == null
+                  ? "Sender did not match the saved list"
+                  : "Notification preview was empty or hidden")
+          .apply();
+      return;
+    }
+    Rules.prefs(this).edit().putString("last_notification_check", "Saved sender matched").apply();
     // Do not include sbn.getKey(): apps can repost old content under a new key.
     // Without a message timestamp, identical email content remains suppressed in the bounded
     // history.
     String conversation = pkg + "|" + Rules.normalize(match.value);
     boolean fresh = history.accept(conversation, body, messageTime);
     persistHistory();
-    if (!baseline && fresh) ReplyRegistry.revokeStream(this, conversation);
+    if (!baseline && fresh) {
+      try {
+        ReplyRegistry.revokeStream(this, conversation);
+      } catch (RuntimeException ignored) {
+      }
+    }
     if (baseline
         || !fresh
         || !Rules.prefs(this).getBoolean("enabled", true)
@@ -291,7 +478,14 @@ public class ReaderService extends NotificationListenerService {
             body,
             System.currentTimeMillis(),
             isReaction);
-    ReplyRegistry.capture(this, sbn, match, event.id, conversation, body);
+    try {
+      ReplyRegistry.capture(this, sbn, match, event.id, conversation, body);
+    } catch (RuntimeException ex) {
+      Rules.prefs(this)
+          .edit()
+          .putString("reply_status", "No reply action available; readout remains enabled.")
+          .apply();
+    }
     // Save immediately, before the sound delay or per-sender queue replacement.
     if (match.speech
         && !(isReaction && Rules.prefs(this).getBoolean("mute_reactions", false))
@@ -493,7 +687,16 @@ public class ReaderService extends NotificationListenerService {
   }
 
   @Override
+  public void onListenerDisconnected() {
+    listenerConnected = false;
+    Rules.prefs(this).edit().putLong("reader_heartbeat", 0).apply();
+    status("Notification listener disconnected. Reconnect notification access.");
+  }
+
+  @Override
   public void onDestroy() {
+    listenerConnected = false;
+    Rules.prefs(this).edit().putLong("reader_heartbeat", 0).apply();
     Rules.prefs(this).unregisterOnSharedPreferenceChangeListener(permissionChanged);
     if (callMonitor != null) callMonitor.close();
     handler.removeCallbacksAndMessages(null);

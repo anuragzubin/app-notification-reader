@@ -67,6 +67,14 @@ final class SpeechBacklog {
     return active;
   }
 
+  boolean hasActive() {
+    return active != null;
+  }
+
+  boolean isActive(String id) {
+    return active != null && active.id.equals(id);
+  }
+
   void complete(String id) {
     if (active != null && active.id.equals(id)) active = null;
   }

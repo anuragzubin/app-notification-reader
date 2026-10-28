@@ -107,4 +107,20 @@ public class SpeechBacklogTest {
     q.offer("Alice", "New after quiet hours");
     assertEquals("New after quiet hours", q.next().text);
   }
+
+  @Test
+  public void retryRejectsOldDelayedPlaybackAndPreservesMessage() {
+    SpeechBacklog q = new SpeechBacklog();
+    q.offer("Anita", "Read this");
+    SpeechBacklog.Item first = q.next();
+    assertTrue(q.isActive(first.id));
+    q.pause();
+    assertFalse(q.isActive(first.id));
+    SpeechBacklog.Item retried = q.next();
+    assertNotEquals(first.id, retried.id);
+    assertEquals("Read this", retried.text);
+    assertTrue(q.isActive(retried.id));
+    q.complete(first.id);
+    assertTrue(q.isActive(retried.id));
+  }
 }

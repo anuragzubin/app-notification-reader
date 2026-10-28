@@ -1,6 +1,6 @@
 # Priority Voice for Android
 
-[Download Priority Voice v2.0 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v2.0.apk)
+[Download Priority Voice v2.1 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v2.1.apk)
 
 Install over the previous version to retain your saved senders and settings. The signed APK is stored in `releases/`, with its checksum in `releases/SHA256SUMS`. This is a personal-testing debug build.
 
@@ -175,3 +175,23 @@ The app cannot know whether a contact will send another message in the future. I
 All earlier platform limits remain: direct WhatsApp notifications must expose a usable Reply action and explicit non-group metadata; clearing or expiring that notification invalidates the reply. Calls, screen lock, silent/DND, master off, and quiet hours prevent the conversation from sending; interrupted drafts require a fresh conversation. No unsolicited or unconfirmed text is sent.
 
 Phone test: have Anita send two messages close together. Confirm the question occurs once after the latest completed readout. Say Yes, dictate, then No; confirm it asks for a replacement message. Dictate again and say Yes after readback, and verify Anita receives only that final text. Also test No at the initial offer, Cancel, a new Anita message arriving while the question is being asked, another contact's messages, and clearing the WhatsApp notification before final confirmation. Automated tests cover the separate Yes stages, rerecording, cancellation, stale offers, and burst timing; actual recognition and WhatsApp sending require phone validation.
+
+## Version 2.1 — readout recovery and microphone coordination
+
+This update addresses concrete failure paths found while investigating the report that v2.0 stopped reading notifications. The exact failure on the Galaxy A54 could not be reproduced without phone diagnostics; the fixes below are verified by compilation and regression tests, not by an actual device playback test.
+
+- The reader reserves audio and releases/destroys the hands-free recognizer **before** calling text-to-speech, with a short handoff delay. Previously, recognition was canceled only after the TTS onStart callback, allowing microphone/audio-resource contention to prevent speech from starting. Hands-free prompts now use the same handoff.
+- Temporary reply audio ownership is in memory, with independently owned 20-second leases renewed only while the interaction is active. Old persisted composing timestamps are ignored and removed. A killed process, abandoned reply screen, or expired lease cannot carry a mute across an upgrade or restart. Hidden dictation is capped and an unresponsive spoken turn times out instead of renewing a pause forever.
+- Failed/stalled TTS starts preserve the queued message and get one engine retry. Stale engine callbacks cannot complete a newer utterance. Optional reply-action preparation/offer failures cannot crash the basic readout path.
+- Call detection uses cellular/Telecom state and ringing/in-call audio modes. Generic MODE_IN_COMMUNICATION alone is no longer treated as a call because recording/speech providers can use it. Non-Telecom VoIP calls may not be detected reliably; real cellular/Telecom calls still pause readouts.
+- Home now shows **Readout status** and the last matching check without recording notification bodies or sender details in diagnostics. A missing listener heartbeat is shown as a connection problem rather than readiness.
+
+### Check the repaired version
+
+Install over the existing app. On Home tap **Reset audio & reconnect** once. It stops the hands-free session, recreates the speech engines, releases temporary audio owners, and requests notification-listener reconnection. Your contacts, per-sender controls, quiet hours, and duplicate/missed history are preserved.
+
+Confirm the all-contact switch and the sender's message readout switch are on, and quiet hours / silent mode / DND are not currently muting alerts. Try sound & voice, then have a listed contact send a **new** WhatsApp message while WhatsApp is in the background. Check the readout status. If it says there is no recent listener connection, use Notification access settings to turn Priority Voice access off and on. Already-undismissed messages remain seeded as seen; recovery does not intentionally reread them.
+
+Only after ordinary readouts work, restart hands-free listening and test the Yes → dictate → Yes reply flow. If the phone is still silent, provide the text shown under Readout status and whether Try sound & voice works. This separates connection, sender matching, schedule/call pauses, and speech-engine failures without sharing private messages.
+
+New regression tests cover microphone release before TTS (without waiting for onStart), canceled delayed playback, independent expiring reply ownership, process restart, real-call versus microphone mode, and retrying without accepting stale utterance callbacks. Actual Android engine behavior and Samsung notification delivery still require phone validation.

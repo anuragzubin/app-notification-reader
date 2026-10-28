@@ -16,14 +16,28 @@ public class ReplyActivity extends Activity {
   private TextView status;
   private TextToSpeech tts;
   private boolean speechReady, dictating;
-  private long nextRenew;
+  private long nextRenew, dictationStarted;
+  private boolean visible;
+  private final String audioOwner = "reply-screen:" + java.util.UUID.randomUUID();
   private CallMonitor calls;
   private final ReplyDraft draft = new ReplyDraft();
   private final Handler handler = new Handler(Looper.getMainLooper());
   private final Runnable poll =
       new Runnable() {
         public void run() {
-          if (System.currentTimeMillis() >= nextRenew) holdReadouts();
+          if (!visible && !dictating) {
+            AudioSessions.release(ReplyActivity.this, audioOwner);
+            return;
+          }
+          if (dictating && android.os.SystemClock.elapsedRealtime() - dictationStarted > 90000) {
+            finishActivity(501);
+            dictating = false;
+            if (!visible) {
+              AudioSessions.release(ReplyActivity.this, audioOwner);
+              return;
+            }
+          }
+          if (android.os.SystemClock.elapsedRealtime() >= nextRenew) holdReadouts();
           if (!allowed()) {
             if (tts != null) tts.stop();
             if (dictating) {
@@ -165,25 +179,24 @@ public class ReplyActivity extends Activity {
   }
 
   private void holdReadouts() {
-    nextRenew = System.currentTimeMillis() + 30000;
-    Rules.prefs(this)
-        .edit()
-        .putLong("reply_composing_until", System.currentTimeMillis() + 120000)
-        .apply();
+    nextRenew = android.os.SystemClock.elapsedRealtime() + 10000;
+    if (editor != null) AudioSessions.hold(this, audioOwner);
   }
 
   @Override
   protected void onStart() {
     super.onStart();
+    visible = true;
     holdReadouts();
   }
 
   @Override
   protected void onStop() {
+    visible = false;
     if (tts != null) tts.stop();
     if (!dictating) {
       handler.removeCallbacks(poll);
-      Rules.prefs(this).edit().putLong("reply_composing_until", 0).apply();
+      AudioSessions.release(this, audioOwner);
     }
     super.onStop();
   }
@@ -230,6 +243,7 @@ public class ReplyActivity extends Activity {
     speech.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
     try {
       dictating = true;
+      dictationStarted = android.os.SystemClock.elapsedRealtime();
       startActivityForResult(speech, 501);
     } catch (ActivityNotFoundException | SecurityException e) {
       dictating = false;
@@ -316,7 +330,7 @@ public class ReplyActivity extends Activity {
 
   @Override
   protected void onDestroy() {
-    Rules.prefs(this).edit().putLong("reply_composing_until", 0).apply();
+    AudioSessions.release(this, audioOwner);
     handler.removeCallbacksAndMessages(null);
     if (calls != null) calls.close();
     if (tts != null) {
