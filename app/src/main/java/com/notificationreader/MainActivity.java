@@ -37,11 +37,13 @@ public class MainActivity extends Activity {
   private android.media.Ringtone testRing;
   private int page;
   private String query = "";
-  private TextView missedCount;
+  private TextView missedCount, handsFreeStatus;
   private Button missedPlay;
   private final android.content.SharedPreferences.OnSharedPreferenceChangeListener missedChanged =
       (prefs, key) -> {
         if (MissedStore.KEY.equals(key)) updateMissedCount();
+        if ("hands_free_running".equals(key) || "hands_free_error".equals(key))
+          updateHandsFreeStatus();
       };
 
   private int pad(int x) {
@@ -249,6 +251,7 @@ public class MainActivity extends Activity {
     layout.requestFocus();
     list = null;
     missedCount = null;
+    handsFreeStatus = null;
     missedPlay = null;
     TextView eyebrow = label("P R I O R I T Y   V O I C E", 11, R.color.accent, true);
     eyebrow.setContentDescription("Priority Voice");
@@ -349,6 +352,14 @@ public class MainActivity extends Activity {
         label("Your chosen people, gently brought to your attention.", 15, R.color.muted, false));
     gap(hero, 12);
     masterSwitch(hero);
+    action(
+        hero,
+        "Hands-free voice commands",
+        false,
+        v -> {
+          page = 2;
+          showPage(true);
+        });
     LinearLayout access = card(layout);
     boolean ready = notificationsAllowed();
     copy(
@@ -464,6 +475,89 @@ public class MainActivity extends Activity {
     action(layout, "Help with sender matching", false, v -> showHelp());
   }
 
+  private void handsFreeCard() {
+    section("Hands-free commands");
+    LinearLayout card = card(layout);
+    copy(
+        card,
+        "Send text with your voice",
+        "Start a microphone session, then say “Send text to Alex.” Dictate your message and say"
+            + " “Send it now” after the readback.");
+    handsFreeStatus = label("", 14, R.color.accent, true);
+    card.addView(handsFreeStatus);
+    updateHandsFreeStatus();
+    action(card, "Start hands-free listening", true, v -> startHandsFree());
+    action(
+        card,
+        "Stop listening",
+        false,
+        v -> {
+          stopService(new Intent(this, HandsFreeService.class));
+          Toast.makeText(this, "Hands-free listening stopped.", Toast.LENGTH_SHORT).show();
+        });
+    gap(card, 10);
+    card.addView(
+        label(
+            "Requires an unlocked phone, a saved WhatsApp contact with Reply by voice on, and a"
+                + " live Reply notification after a readout. It cannot start arbitrary new WhatsApp"
+                + " chats. Say “Cancel” to discard or “Stop listening” to finish. Listening uses"
+                + " battery; your speech provider may use the network. No recordings are saved by"
+                + " this app.",
+            13,
+            R.color.muted,
+            false));
+  }
+
+  private void updateHandsFreeStatus() {
+    if (handsFreeStatus == null) return;
+    handsFreeStatus.setText(
+        Rules.prefs(this).getBoolean("hands_free_running", false)
+            ? "Session active · check the ongoing microphone notification."
+            : Rules.prefs(this).getString("hands_free_error", "Listening is off."));
+  }
+
+  private void startHandsFree() {
+    if (!Rules.prefs(this).getBoolean("enabled", true) || QuietHours.active(this)) {
+      Toast.makeText(
+              this, "Enable all-contact alerts outside quiet hours first.", Toast.LENGTH_LONG)
+          .show();
+      return;
+    }
+    if (!phoneAllowed()) {
+      Toast.makeText(
+              this,
+              "Allow Phone permission first so hands-free mode can pause during calls.",
+              Toast.LENGTH_LONG)
+          .show();
+      requestPhone();
+      return;
+    }
+    if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+        != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+      requestPermissions(new String[] {android.Manifest.permission.RECORD_AUDIO}, 75);
+      return;
+    }
+    if (android.os.Build.VERSION.SDK_INT >= 33
+        && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+      requestPermissions(new String[] {android.Manifest.permission.POST_NOTIFICATIONS}, 76);
+      return;
+    }
+    try {
+      startForegroundService(new Intent(this, HandsFreeService.class));
+      Toast.makeText(
+              this, "Hands-free session starting. Keep the phone unlocked.", Toast.LENGTH_LONG)
+          .show();
+    } catch (SecurityException | IllegalStateException e) {
+      Toast.makeText(
+              this,
+              "Android blocked microphone startup. Check microphone permission and start again"
+                  + " while the app is open.",
+              Toast.LENGTH_LONG)
+          .show();
+    }
+  }
+
   private void quietHoursCard() {
     section("Quiet hours");
     LinearLayout quiet = card(layout);
@@ -553,6 +647,7 @@ public class MainActivity extends Activity {
   }
 
   private void preferences() {
+    handsFreeCard();
     quietHoursCard();
     section("Connections");
     LinearLayout access = card(layout);
@@ -620,7 +715,7 @@ public class MainActivity extends Activity {
             + " is kept. Silent mode and Do Not Disturb are respected.");
     action(privacy, "Sender matching & Samsung tips", false, v -> showHelp());
     gap(layout, 8);
-    layout.addView(label("PRIORITY VOICE  /  1.8", 11, R.color.muted, true));
+    layout.addView(label("PRIORITY VOICE  /  1.9", 11, R.color.muted, true));
   }
 
   private void render() {
@@ -907,6 +1002,17 @@ public class MainActivity extends Activity {
   @Override
   public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
     super.onRequestPermissionsResult(code, permissions, results);
+    if (code == 75 || code == 76) {
+      if (results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED)
+        startHandsFree();
+      else
+        Toast.makeText(
+                this,
+                "Microphone and notification permissions are needed for the visible hands-free"
+                    + " session.",
+                Toast.LENGTH_LONG)
+            .show();
+    }
     if (code == 73) {
       if (testCallMonitor != null) testCallMonitor.start();
       Rules.prefs(this).edit().putLong("refresh_call_monitor", System.nanoTime()).apply();

@@ -21,6 +21,7 @@ import org.json.JSONObject;
 public class ReaderService extends NotificationListenerService {
   private TextToSpeech tts;
   private boolean ready;
+  private String speakingId;
   private boolean callBlocked;
   private boolean quietActive;
   private boolean replyComposing;
@@ -37,7 +38,7 @@ public class ReaderService extends NotificationListenerService {
   private final android.content.SharedPreferences.OnSharedPreferenceChangeListener
       permissionChanged =
           (prefs, key) -> {
-            if ("reply_composing_until".equals(key))
+            if ("reply_composing_until".equals(key) || "hands_free_composing_until".equals(key))
               this.handler.post(this::enforceReplyComposition);
             if ("enabled".equals(key) && !prefs.getBoolean("enabled", true))
               this.handler.post(this::stopAllAlerts);
@@ -60,6 +61,7 @@ public class ReaderService extends NotificationListenerService {
   @Override
   public void onCreate() {
     super.onCreate();
+    clearSpeaking();
     restoreHistory("identities", history.identities);
     restoreHistory("newest", history.newest);
     tts =
@@ -91,6 +93,7 @@ public class ReaderService extends NotificationListenerService {
                 rememberQueued();
                 speechBacklog.pause();
                 tts.stop();
+                clearSpeaking();
                 if (ring != null) ring.stop();
               } else {
                 handler.postDelayed(
@@ -106,11 +109,25 @@ public class ReaderService extends NotificationListenerService {
     quietTick.run();
   }
 
+  private void clearSpeaking() {
+    speakingId = null;
+    Rules.prefs(this).edit().putLong("reader_speaking_until", 0).apply();
+  }
+
   private void configureSpeechCallbacks() {
     tts.setOnUtteranceProgressListener(
         new UtteranceProgressListener() {
           @Override
-          public void onStart(String id) {}
+          public void onStart(String id) {
+            handler.post(
+                () -> {
+                  speakingId = id;
+                  Rules.prefs(ReaderService.this)
+                      .edit()
+                      .putLong("reader_speaking_until", System.currentTimeMillis() + 120000)
+                      .apply();
+                });
+          }
 
           @Override
           public void onDone(String id) {
@@ -125,6 +142,7 @@ public class ReaderService extends NotificationListenerService {
           private void finish(String id, boolean success) {
             handler.post(
                 () -> {
+                  if (id.equals(speakingId)) clearSpeaking();
                   MissedReadouts.Entry event = utteranceEvents.remove(id);
                   if (success && event != null) {
                     MissedStore.remove(ReaderService.this, event.id);
@@ -278,7 +296,10 @@ public class ReaderService extends NotificationListenerService {
     if (match.speech
         && !(isReaction && Rules.prefs(this).getBoolean("mute_reactions", false))
         && (callBlocked || callMonitor.isBlocked())) MissedStore.add(this, event);
-    if (speechBacklog.cancel(conversation)) tts.stop();
+    if (speechBacklog.cancel(conversation)) {
+      tts.stop();
+      clearSpeaking();
+    }
     events.put(conversation, event);
     // Other senders can continue while this sender's newest alert is prepared.
     speakNext();
@@ -317,7 +338,10 @@ public class ReaderService extends NotificationListenerService {
                     && !(reaction && Rules.prefs(this).getBoolean("mute_reactions", false))) {
                   if (callBlocked || callMonitor.isBlocked()) MissedStore.add(this, event);
                   speechRules.put(conversation, selected);
-                  if (speechBacklog.offer(conversation, speech)) tts.stop();
+                  if (speechBacklog.offer(conversation, speech)) {
+                    tts.stop();
+                    clearSpeaking();
+                  }
                   speakNext();
                 }
               },
@@ -338,7 +362,10 @@ public class ReaderService extends NotificationListenerService {
     for (MissedReadouts.Entry e : MissedStore.load(this)) ids.add(e.id);
     for (SpeechBacklog.Item item : speechBacklog.snapshot()) {
       MissedReadouts.Entry e = events.get(item.sender);
-      if (e != null && ids.contains(e.id) && speechBacklog.cancel(item.sender)) tts.stop();
+      if (e != null && ids.contains(e.id) && speechBacklog.cancel(item.sender)) {
+        tts.stop();
+        clearSpeaking();
+      }
     }
     // Invalidate sound-delay callbacks too, so they cannot restore a just-cleared item.
     for (MissedReadouts.Entry e : events.values())
@@ -393,6 +420,7 @@ public class ReaderService extends NotificationListenerService {
       speechBacklog.pause();
       utteranceEvents.clear();
       if (tts != null) tts.stop();
+      clearSpeaking();
       if (ring != null) ring.stop();
     }
     boolean resume = replyComposing && !composing;
@@ -414,6 +442,7 @@ public class ReaderService extends NotificationListenerService {
     utteranceEvents.clear();
     latest.replaceAll((sender, generation) -> ++sequence);
     if (tts != null) tts.stop();
+    clearSpeaking();
     if (ring != null) ring.stop();
     Rules.prefs(this)
         .edit()
@@ -469,6 +498,7 @@ public class ReaderService extends NotificationListenerService {
     if (callMonitor != null) callMonitor.close();
     handler.removeCallbacksAndMessages(null);
     if (ring != null) ring.stop();
+    clearSpeaking();
     if (tts != null) {
       tts.stop();
       tts.shutdown();

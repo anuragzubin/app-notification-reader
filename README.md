@@ -1,6 +1,6 @@
 # Priority Voice for Android
 
-[Download Priority Voice v1.8 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v1.8.apk)
+[Download Priority Voice v1.9 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v1.9.apk)
 
 Install over the previous version to retain your saved senders and settings. The signed APK is stored in `releases/`, with its checksum in `releases/SHA256SUMS`. This is a personal-testing debug build.
 
@@ -133,3 +133,24 @@ For recipient accuracy, replies require an explicit non-group notification flag,
 Current contact opt-in, global enable, quiet hours, phone lock, and call state are checked before dictation and confirmation. Outgoing confirmation is foreground and requires an unlocked phone. Readouts pause while composing/dictating; they resume afterward according to existing sender and schedule rules. If a call begins, draft readback stops and active dictation is canceled where the recognition provider supports it. Final send is blocked during calls. Turning the per-contact switch off invalidates that contact's pending reply prompts. Android notification permission affects prompts; the in-app reply button remains usable after a qualifying readout when the prompt permission was denied.
 
 Tests cover exact-draft confirmation, editing invalidation, empty drafts, duplicate send attempts, and confirmation after retry. No actual WhatsApp reply has been sent from the cloud environment. Phone validation is required: enable one contact, receive a direct message, let it finish, dictate a harmless test reply, edit it, cancel once, then explicitly confirm Send to a consenting test recipient. Verify disabled contacts and groups do not offer replies, changes/clearance expire actions, and calls/quiet hours prevent recording or sending. Verify separate sound/name/message switches still work after changing reply opt-in.
+
+## Version 1.9 — hands-free voice commands for supported WhatsApp replies
+
+**Capability boundary:** this is hands-free sending through an existing, eligible WhatsApp notification Reply action. It cannot initiate arbitrary new personal WhatsApp chats. A listed contact must have **Reply by voice** enabled and a live direct-message Reply action after a completed readout. If none exists, the service explains this aloud and returns to listening. Notification dismissal, expiry, a new message, app restart, or disabling the contact can invalidate a route. No undocumented WhatsApp API or accessibility automation is used.
+
+### Start once, then use voice
+
+1. Enable **Reply by voice** for the desired listed WhatsApp contacts and give them unique, easily spoken names when adding them.
+2. Open **Home → Hands-free voice commands** or **Settings → Hands-free commands**. Tap **Start hands-free listening** while the app is visible. Allow Phone, microphone, and notification permissions when asked.
+3. Keep the phone unlocked and wait for the readiness prompt. Say **“Send text to Alex”**, using the exact saved spoken name or contact value.
+4. When asked what to say, dictate the message. The app reads the recipient and text back.
+5. Say **“Send it now”** as a separate turn to hand the text to WhatsApp, or **“Cancel”** to discard it. A message containing those words is not itself confirmation.
+6. Say **“Stop listening”**, tap Stop listening on the ongoing notification, or use the Stop button in Settings to finish the microphone session.
+
+After startup and permission grants, no tapping is required for the supported command/dictate/confirm sequence. Sending still uses the per-contact opt-in and WhatsApp's original Reply action. Confirmation must exactly match “Send it now”; unrelated or negated phrases do not send. Ambiguous duplicate contact names are rejected. Transcription is limited to 2,000 characters. Cancel, timeout, call interruption, screen lock, quiet hours, and global alert disable discard an unfinished hands-free draft; they never silently send it later.
+
+The microphone runs as an explicitly user-started foreground session with a visible notification and Android's mic indicator. It is not started automatically after notifications, at boot, or after Android kills it. Speech recognition repeatedly listens during the opted-in session and can consume substantial battery; Android's speech-recognition provider may throttle, require network access, or be unavailable. On-device recognition is preferred where installed; otherwise the device's recognizer is used with an offline preference, not an offline guarantee. Commands use English (India). No recordings or transcripts are saved by this mode.
+
+Listening pauses during notification readouts and the app's own spoken prompts to avoid recognizing its own output. Notification readouts wait during dictation/confirmation and resume afterward. Calls, screen lock, quiet hours, silent/DND, and the master off switch suspend listening and sending. The phone must be unlocked; this does not bypass Android lock-screen security or provide an OS-level wake word. Samsung background restrictions and the selected speech provider affect continuous recognition; real device testing is required. If recognition fails repeatedly, the session stops and Settings displays the last error.
+
+Tests cover command parsing, exact and negated confirmations, no send before dictation, separate-turn confirmation, duplicate-confirmation prevention, cancellation/reset, and transcript bounds. Phone validation: receive a direct message from an opted-in test contact, let the readout finish, start the session, issue the command, dictate a harmless text, cancel once, then retry and say Send it now. Verify the recipient receives exactly one confirmed message. Test absent/cleared Reply actions, duplicate names, group chats, calls, locked screen, quiet hours, and disabling the contact or master switch mid-flow. No real WhatsApp sends or microphone background behavior have been verified in the cloud environment.

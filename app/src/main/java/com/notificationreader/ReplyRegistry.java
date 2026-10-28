@@ -44,7 +44,9 @@ final class ReplyRegistry {
   }
 
   static boolean composing(Context context) {
-    return Rules.prefs(context).getLong("reply_composing_until", 0) > System.currentTimeMillis();
+    return Rules.prefs(context).getLong("reply_composing_until", 0) > System.currentTimeMillis()
+        || Rules.prefs(context).getLong("hands_free_composing_until", 0)
+            > System.currentTimeMillis();
   }
 
   static synchronized void capture(
