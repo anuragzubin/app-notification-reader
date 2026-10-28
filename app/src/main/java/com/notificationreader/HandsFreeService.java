@@ -22,6 +22,8 @@ public class HandsFreeService extends Service implements RecognitionListener {
   private boolean ready, listening, speaking, paused, closed;
   private int errors, attempts;
   private long wakeUntil;
+  private boolean listenScheduled, systemRecognizer, wakeAcknowledgement;
+  private int recognizerGeneration;
   private android.view.View floatingControl;
 
   private void showFloatingControl() {
@@ -60,6 +62,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
       (prefs, key) -> {
         if ("reader_speaking_until".equals(key) && readerSpeaking()) {
           wakeUntil = 0;
+          wakeAcknowledgement = false;
           releaseMicrophone();
         }
         if ("reply_offer_token".equals(key)) collectOffer();
@@ -80,6 +83,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
           if (!allowed && !paused) {
             paused = true;
             wakeUntil = 0;
+            wakeAcknowledgement = false;
             hideFloatingControl();
             cancelRecognition();
             promptId = null;
@@ -113,13 +117,20 @@ public class HandsFreeService extends Service implements RecognitionListener {
               && !android.provider.Settings.canDrawOverlays(HandsFreeService.this))
             hideFloatingControl();
           if (allowed && !paused) askAfterReadouts();
-          if (allowed && !paused && !speaking && !listening && ready) scheduleListen(500);
+          if (allowed && !paused && !speaking && !listening && !listenScheduled && ready)
+            scheduleListen(500);
           handler.postDelayed(this, 500);
         }
       };
-  private final Runnable listenTask = this::listen;
+  private final Runnable listenTask =
+      () -> {
+        listenScheduled = false;
+        listen();
+      };
 
   private void cancelConversation() {
+    wakeAcknowledgement = false;
+    wakeUntil = 0;
     cancelRecognition();
     if (tts != null) tts.stop();
     promptId = null;
@@ -259,6 +270,10 @@ public class HandsFreeService extends Service implements RecognitionListener {
     if (!id.equals(promptId) || closed) return;
     speaking = false;
     turnDeadline = SystemClock.elapsedRealtime() + 30000;
+    if (wakeAcknowledgement) {
+      wakeAcknowledgement = false;
+      wakeUntil = SystemClock.elapsedRealtime() + 15000;
+    }
     if (flow.stage == HandsFreeFlow.Stage.COMMAND) hold(false);
     scheduleListen(650);
   }
@@ -283,6 +298,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
 
   private void scheduleListen(long delay) {
     handler.removeCallbacks(listenTask);
+    listenScheduled = !closed;
     if (!closed) handler.postDelayed(listenTask, delay);
   }
 
@@ -293,7 +309,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
             .putExtra(
                 RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
-            .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
             .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false);
     try {
       listening = true;
@@ -308,16 +324,49 @@ public class HandsFreeService extends Service implements RecognitionListener {
 
   private void createRecognizer() {
     try {
-      if (Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(this))
+      if (!systemRecognizer
+          && Build.VERSION.SDK_INT >= 31
+          && SpeechRecognizer.isOnDeviceRecognitionAvailable(this))
         recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(this);
       else recognizer = SpeechRecognizer.createSpeechRecognizer(this);
     } catch (UnsupportedOperationException e) {
       recognizer = SpeechRecognizer.createSpeechRecognizer(this);
     }
-    recognizer.setRecognitionListener(this);
+    final int generation = ++recognizerGeneration;
+    recognizer.setRecognitionListener(
+        new RecognitionListener() {
+          private boolean current() {
+            return generation == recognizerGeneration && !closed;
+          }
+
+          public void onResults(Bundle b) {
+            if (current()) HandsFreeService.this.onResults(b);
+          }
+
+          public void onError(int e) {
+            if (current()) HandsFreeService.this.onError(e);
+          }
+
+          public void onReadyForSpeech(Bundle b) {
+            if (current()) HandsFreeService.this.onReadyForSpeech(b);
+          }
+
+          public void onBeginningOfSpeech() {}
+
+          public void onRmsChanged(float f) {}
+
+          public void onBufferReceived(byte[] b) {}
+
+          public void onEndOfSpeech() {}
+
+          public void onPartialResults(Bundle b) {}
+
+          public void onEvent(int t, Bundle b) {}
+        });
   }
 
   private void releaseMicrophone() {
+    recognizerGeneration++;
     cancelRecognition();
     if (recognizer != null) {
       recognizer.destroy();
@@ -327,6 +376,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
 
   private void cancelRecognition() {
     handler.removeCallbacks(listenTask);
+    listenScheduled = false;
     listening = false;
     if (recognizer != null) recognizer.cancel();
   }
@@ -334,6 +384,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
   private void prompt(String words) {
     cancelRecognition();
     if (!ready || !allowed()) {
+      wakeAcknowledgement = false;
       flow.reset();
       hold(false);
       return;
@@ -343,7 +394,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
     turnDeadline =
         SystemClock.elapsedRealtime() + Math.min(120000, Math.max(15000, words.length() * 100L));
     promptId = UUID.randomUUID().toString();
-    notice(words);
+    notice("Speaking · wait for the spoken prompt to finish before answering.");
     final String id = promptId;
     ReadoutHandoff.start(
         handler::postDelayed,
@@ -370,17 +421,25 @@ public class HandsFreeService extends Service implements RecognitionListener {
       return;
     }
     if (flow.stage == HandsFreeFlow.Stage.COMMAND
-        && Rules.prefs(this).getBoolean("wake_enabled", false)) {
+        && (Rules.prefs(this).getBoolean("wake_enabled", false)
+            || VoiceCommand.afterWake(
+                    words, Rules.prefs(this).getString("wake_phrase", "Hey Priority"))
+                != null)) {
       String command =
           VoiceCommand.afterWake(words, Rules.prefs(this).getString("wake_phrase", "Hey Priority"));
       if (command != null) {
         words = command;
         wakeUntil = SystemClock.elapsedRealtime() + 15000;
         if (command.isEmpty()) {
+          wakeAcknowledgement = true;
           prompt("I'm listening. What would you like to open or do?");
           return;
         }
       } else if (SystemClock.elapsedRealtime() >= wakeUntil) {
+        notice(
+            "Speech detected, but wake phrase not matched. Say "
+                + Rules.prefs(this).getString("wake_phrase", "Hey Priority")
+                + ".");
         scheduleListen(650);
         return;
       }
@@ -413,13 +472,21 @@ public class HandsFreeService extends Service implements RecognitionListener {
       if (open != null) {
         releaseMicrophone();
         // Leave a tap fallback even if an OEM silently blocks the overlay launch.
-        prompt(
-            VoiceAppLauncher.open(
-                this, open, floatingControl != null && floatingControl.isShown()));
+        String result =
+            VoiceAppLauncher.open(this, open, floatingControl != null && floatingControl.isShown());
+        Rules.prefs(this).edit().putString("last_launch_status", result).apply();
+        prompt(result);
         return;
       }
       String spoken = VoiceCommand.recipient(words);
       if (spoken == null) {
+        notice("Command not understood. Try Open WhatsApp, Open Gmail, or Open Spotify.");
+        prompt(
+            "I didn't understand the command. Please say the wake phrase and Open WhatsApp, Open"
+                + " Gmail, or Open Spotify.");
+        return;
+      }
+      if (spoken.isEmpty()) {
         scheduleListen(650);
         return;
       }
@@ -510,18 +577,39 @@ public class HandsFreeService extends Service implements RecognitionListener {
       return;
     }
     errors = 0;
+    releaseMicrophone();
     ArrayList<String> text = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
     if (text == null || text.isEmpty()) {
       scheduleListen(800);
       return;
     }
-    handle(text.get(0));
+    handle(
+        flow.stage == HandsFreeFlow.Stage.COMMAND
+            ? VoiceCommand.selectCommand(
+                text,
+                Rules.prefs(this).getString("wake_phrase", "Hey Priority"),
+                Rules.prefs(this).getBoolean("wake_enabled", false),
+                SystemClock.elapsedRealtime() < wakeUntil)
+            : text.get(0));
   }
 
   @Override
   public void onError(int error) {
     if (!listening || closed) return;
-    listening = false;
+    releaseMicrophone();
+    if (!systemRecognizer
+        && (error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED
+            || error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE
+            || error == SpeechRecognizer.ERROR_SERVER
+            || error == SpeechRecognizer.ERROR_SERVER_DISCONNECTED)) {
+      systemRecognizer = true;
+      notice(
+          "On-device recognition unavailable for this language. Trying your system speech"
+              + " provider.");
+      scheduleListen(1000);
+      return;
+    }
+    notice("Speech recognition: " + recognitionError(error));
     if (flow.stage != HandsFreeFlow.Stage.COMMAND
         && (error == SpeechRecognizer.ERROR_NO_MATCH
             || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
@@ -545,7 +633,38 @@ public class HandsFreeService extends Service implements RecognitionListener {
   }
 
   @Override
-  public void onReadyForSpeech(Bundle b) {}
+  public void onReadyForSpeech(Bundle b) {
+    notice(
+        flow.stage != HandsFreeFlow.Stage.COMMAND
+            ? "Listening for your reply or confirmation."
+            : Rules.prefs(this).getBoolean("wake_enabled", false)
+                    && SystemClock.elapsedRealtime() >= wakeUntil
+                ? "Ready · say "
+                    + Rules.prefs(this).getString("wake_phrase", "Hey Priority")
+                    + ", open WhatsApp."
+                : "Ready · say Open WhatsApp, Open Gmail, or Open Spotify.");
+  }
+
+  private String recognitionError(int error) {
+    switch (error) {
+      case SpeechRecognizer.ERROR_NO_MATCH:
+        return "No words recognized; listening again.";
+      case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
+        return "No speech heard; listening again.";
+      case SpeechRecognizer.ERROR_AUDIO:
+        return "Microphone audio error.";
+      case SpeechRecognizer.ERROR_NETWORK:
+      case SpeechRecognizer.ERROR_NETWORK_TIMEOUT:
+        return "Speech provider network error.";
+      case SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED:
+      case SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE:
+        return "English India speech model unavailable. Check voice input languages.";
+      case SpeechRecognizer.ERROR_RECOGNIZER_BUSY:
+        return "Speech provider busy; retrying.";
+      default:
+        return "Provider error " + error + ".";
+    }
+  }
 
   @Override
   public void onBeginningOfSpeech() {}
@@ -596,6 +715,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
   }
 
   private void notice(String words) {
+    Rules.prefs(this).edit().putString("hands_free_status", words).apply();
     getSystemService(NotificationManager.class).notify(51001, notification(words));
   }
 

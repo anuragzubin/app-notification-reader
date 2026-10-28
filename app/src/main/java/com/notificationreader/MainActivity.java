@@ -46,8 +46,10 @@ public class MainActivity extends Activity {
         if ("reader_heartbeat".equals(key)
             || "readout_status".equals(key)
             || "last_notification_check".equals(key)) updateReadoutHealth();
-        if ("hands_free_running".equals(key) || "hands_free_error".equals(key))
-          updateHandsFreeStatus();
+        if ("hands_free_running".equals(key)
+            || "hands_free_error".equals(key)
+            || "hands_free_status".equals(key)
+            || "last_launch_status".equals(key)) updateHandsFreeStatus();
       };
 
   private int pad(int x) {
@@ -661,6 +663,18 @@ public class MainActivity extends Activity {
     handsFreeStatus = label("", 14, R.color.accent, true);
     card.addView(handsFreeStatus);
     updateHandsFreeStatus();
+    for (String app : new String[] {"WhatsApp", "Gmail", "Spotify"}) {
+      action(
+          card,
+          "Test opening " + app,
+          false,
+          v -> {
+            String result =
+                VoiceAppLauncher.open(this, app.toLowerCase(java.util.Locale.ROOT), false);
+            Rules.prefs(this).edit().putString("last_launch_status", result).apply();
+            Toast.makeText(this, result, Toast.LENGTH_LONG).show();
+          });
+    }
     action(card, "Start hands-free listening", true, v -> startHandsFree());
     action(
         card,
@@ -687,8 +701,12 @@ public class MainActivity extends Activity {
     if (handsFreeStatus == null) return;
     handsFreeStatus.setText(
         Rules.prefs(this).getBoolean("hands_free_running", false)
-            ? "Session active · check the ongoing microphone notification."
+            ? Rules.prefs(this)
+                .getString(
+                    "hands_free_status", "Session active · check the microphone notification.")
             : Rules.prefs(this).getString("hands_free_error", "Listening is off."));
+    String launch = Rules.prefs(this).getString("last_launch_status", "");
+    if (!launch.isEmpty()) handsFreeStatus.append("\nLast app command: " + launch);
   }
 
   private void startHandsFree() {

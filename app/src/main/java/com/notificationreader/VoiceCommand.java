@@ -24,8 +24,31 @@ final class VoiceCommand {
     return words.startsWith(wake + " ") ? words.substring(wake.length() + 1) : null;
   }
 
+  static String commandWords(String speech) {
+    return normalize(speech)
+        .replaceAll("\\bwhat s app\\b|\\bwhats app\\b|\\bwhat app\\b", "whatsapp")
+        .replaceAll("\\bg mail\\b|\\bgoogle mail\\b", "gmail")
+        .replaceAll("\\bspot ify\\b", "spotify");
+  }
+
+  static String selectCommand(
+      java.util.List<String> candidates, String phrase, boolean requireWake, boolean awake) {
+    if (candidates == null || candidates.isEmpty()) return "";
+    // Only command mode uses alternatives. Dictation and Yes/No keep the first result.
+    for (String candidate : candidates) {
+      String after = afterWake(candidate, phrase);
+      if (requireWake && !awake && after == null) continue;
+      String command = after != null ? after : candidate;
+      if (after != null
+          || openTarget(command) != null
+          || recipient(command) != null
+          || stop(candidate)) return candidate;
+    }
+    return candidates.get(0);
+  }
+
   static String openTarget(String speech) {
-    String words = normalize(speech);
+    String words = commandWords(speech);
     return words.startsWith("open ") ? words.substring(5) : null;
   }
 

@@ -1,6 +1,6 @@
 # Priority Voice for Android
 
-[Download Priority Voice v2.2 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v2.2.apk)
+[Download Priority Voice v2.3 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v2.3.apk)
 
 Install over the previous version to retain your saved senders and settings. The signed APK is stored in `releases/`, with its checksum in `releases/SHA256SUMS`. This is a personal-testing debug build.
 
@@ -208,3 +208,14 @@ Android restricts background app launches. For hands-free opening while Priority
 This is phrase gating using Android speech recognition, not a dedicated low-power hotword engine. The user must start a microphone foreground session; it does not wake a stopped app, auto-start at boot, or listen while locked. Recognition may have gaps, consume battery, or use the installed provider's network; the app saves no audio. On-device recognition is preferred when available. Calls and readout audio retain priority over listening. Existing automatic reply offers remain optional and do not need the wake phrase.
 
 Validation: compilation, JVM tests, and Android lint pass. On a Galaxy A54, verify combined and separate wake commands, app allow switches, a number-linked named contact without changing its notification match, background opening with and without overlay permission, lock/call pauses, and notification readouts with the wake session running. Physical-device behavior has not been verified in this workspace.
+
+
+## Voice command troubleshooting improvements (v2.3)
+
+Speech recognition now requests alternatives and checks them for wake/command matches only in command mode. Dictation and send confirmations still use the first result. Common provider spellings such as “G mail”, “Google mail”, “Whats app”, and “What's app” resolve to the existing three-app allowlist. The configured wake phrase also works when Require wake phrase is off; that switch controls whether unprefixed commands are accepted. The 15-second follow-up window starts after the spoken wake acknowledgement finishes, rather than before it.
+
+Recognition retries keep their requested delay instead of being rescheduled by the polling loop. Each completed/failed recognition session releases its recognizer; generation guards ignore callbacks from destroyed sessions. If an on-device English India model is unavailable or the provider reports server failure, the session retries using the system speech provider, which may use the network. The app does not guarantee offline recognition. Unmatched wake phrases, unknown commands, readiness, and provider errors now appear as categorical status under Hands-free commands and in the ongoing notification; no raw recognized transcripts or message drafts are stored by these diagnostics.
+
+Use **Test opening WhatsApp / Gmail / Spotify** in Settings while Priority Voice is visible to check installed-app routing separately from speech recognition. Last app-command outcome remains visible in the status card. Package-scoped WhatsApp links are attempted directly rather than rejected solely by a preflight resolver. Background opening still requires the visible permitted floating control and remains subject to Samsung/Android restrictions; the notification fallback is retained. A recognizer beep alone does not confirm a wake-phrase match: wait for spoken “I'm listening” when using the phrase alone, then give the command.
+
+Compilation, JVM tests, and lint are workspace checks, not physical Samsung verification. The reported phone failure has not been reproduced on a device here.

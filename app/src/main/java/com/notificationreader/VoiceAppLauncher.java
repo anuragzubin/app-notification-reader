@@ -51,7 +51,7 @@ final class VoiceAppLauncher {
                   .getString("chat_number:" + matches.get(0).value, matches.get(0).value));
       if (phone == null)
         return "Set this contact's WhatsApp chat number in Senders, starting with plus and country"
-                   + " code. A display name alone cannot open their WhatsApp chat.";
+            + " code. A display name alone cannot open their WhatsApp chat.";
       intent =
           new Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + phone))
               .setPackage(packageName);
@@ -59,8 +59,8 @@ final class VoiceAppLauncher {
       intent = context.getPackageManager().getLaunchIntentForPackage(packageName);
       if (intent == null) return "Please install " + app + " first.";
     }
-    if (intent.resolveActivity(context.getPackageManager()) == null)
-      return "This app cannot open that destination on this phone.";
+    // A package-scoped WhatsApp deep link is attempted directly; a preflight resolver
+    // can reject valid links due to device-specific package visibility/default rules.
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
     try {
       MainActivity visible = MainActivity.visibleActivity;
@@ -72,7 +72,7 @@ final class VoiceAppLauncher {
       if (floatingVisible && android.provider.Settings.canDrawOverlays(context)) {
         postShortcut(context, intent, app);
         context.startActivity(intent);
-        return "Opening " + app + ". If Android prevents it, use the app-opening notification.";
+        return "Opening " + app + ".";
       }
     } catch (ActivityNotFoundException | SecurityException e) {
       // Always leave an explicit user-initiated route available.
