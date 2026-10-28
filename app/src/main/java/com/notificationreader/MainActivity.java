@@ -17,6 +17,7 @@ import android.widget.*;
 import java.util.List;
 
 public class MainActivity extends Activity {
+  static MainActivity visibleActivity;
   private LinearLayout layout, list, navigation;
   private TextToSpeech tts;
   private boolean speechReady;
@@ -572,6 +573,91 @@ public class MainActivity extends Activity {
     automatic.setOnCheckedChangeListener(
         (button, checked) ->
             Rules.prefs(this).edit().putBoolean("auto_reply_offer", checked).apply());
+    Switch wake =
+        toggle(
+            card,
+            "Require wake phrase",
+            "Say the phrase before a new command. Reply questions still accept Yes or No.",
+            "",
+            Rules.prefs(this).getBoolean("wake_enabled", false));
+    wake.setOnCheckedChangeListener(
+        (button, checked) -> Rules.prefs(this).edit().putBoolean("wake_enabled", checked).apply());
+    action(
+        card,
+        "Change wake phrase",
+        false,
+        v -> {
+          LinearLayout box = new LinearLayout(this);
+          box.setOrientation(LinearLayout.VERTICAL);
+          EditText phrase = field(box, "Wake phrase", "Hey Priority");
+          phrase.setText(Rules.prefs(this).getString("wake_phrase", "Hey Priority"));
+          AlertDialog dialog =
+              new AlertDialog.Builder(this)
+                  .setTitle("Wake phrase")
+                  .setView(box)
+                  .setNegativeButton("Cancel", null)
+                  .setPositiveButton("Save", null)
+                  .create();
+          dialog.setOnShowListener(
+              d ->
+                  dialog
+                      .getButton(AlertDialog.BUTTON_POSITIVE)
+                      .setOnClickListener(
+                          b -> {
+                            String value = VoiceCommand.normalize(phrase.getText().toString());
+                            if (value.length() < 3 || value.length() > 50 || !value.contains(" ")) {
+                              phrase.setError("Use at least two words, up to 50 characters.");
+                              return;
+                            }
+                            Rules.prefs(this).edit().putString("wake_phrase", value).apply();
+                            dialog.dismiss();
+                          }));
+          dialog.show();
+        });
+    copy(
+        card,
+        "Allowed apps",
+        "Say Open Spotify, Open WhatsApp, Open Gmail, or Open WhatsApp chat with Anita. A saved"
+            + " chat needs a full phone number with +country code. Opening a chat does not send a"
+            + " message.");
+    for (String app : new String[] {"Spotify", "WhatsApp", "Gmail"}) {
+      Switch permitted =
+          toggle(
+              card,
+              "Allow " + app,
+              "",
+              "",
+              Rules.prefs(this).getBoolean("open_" + app.toLowerCase(java.util.Locale.ROOT), true));
+      permitted.setOnCheckedChangeListener(
+          (button, checked) ->
+              Rules.prefs(this)
+                  .edit()
+                  .putBoolean("open_" + app.toLowerCase(java.util.Locale.ROOT), checked)
+                  .apply());
+    }
+    action(
+        card,
+        "Allow floating control for hands-free app opening",
+        false,
+        v -> {
+          try {
+            startActivity(
+                new Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    android.net.Uri.parse("package:" + getPackageName())));
+          } catch (android.content.ActivityNotFoundException e) {
+            Toast.makeText(this, "Overlay settings unavailable on this device.", Toast.LENGTH_LONG)
+                .show();
+          }
+        });
+    copy(
+        card,
+        "Wake listening",
+        "Default phrase: Hey Priority. Start listening below after changing permissions. The phone"
+            + " must be unlocked. A small Stop voice control stays visible when overlay permission"
+            + " is allowed. Without it, background app-opening commands show a tap-to-open"
+            + " notification. This uses speech recognition, not a low-power always-on wake"
+            + " detector; recognition may use your provider's network and battery.");
     handsFreeStatus = label("", 14, R.color.accent, true);
     card.addView(handsFreeStatus);
     updateHandsFreeStatus();
@@ -588,10 +674,10 @@ public class MainActivity extends Activity {
     card.addView(
         label(
             "Requires an unlocked phone, a saved WhatsApp contact with Reply by voice on, and a"
-                + " live Reply notification after a readout. It cannot start arbitrary new WhatsApp"
-                + " chats. Say “Cancel” to discard or “Stop listening” to finish. Listening uses"
-                + " battery; your speech provider may use the network. No recordings are saved by"
-                + " this app.",
+                + " live Reply notification after a readout. Sending still requires a live"
+                + " notification Reply action; opening a chat alone cannot send a message. Say"
+                + " “Cancel” to discard or “Stop listening” to finish. Listening uses battery; your"
+                + " speech provider may use the network. No recordings are saved by this app.",
             13,
             R.color.muted,
             false));
@@ -856,6 +942,54 @@ public class MainActivity extends Activity {
       message.setOnCheckedChangeListener(
           (button, checked) -> updateAlerts(r, sound.isChecked(), sender.isChecked(), checked));
       if (r.type.equals("WhatsApp")) {
+        action(
+            c,
+            "Set WhatsApp chat number",
+            false,
+            v -> {
+              LinearLayout box = column();
+              EditText phone = field(box, "Chat number · optional", "+91 98765 43210");
+              phone.setInputType(android.text.InputType.TYPE_CLASS_PHONE);
+              phone.setText(
+                  Rules.prefs(this)
+                      .getString(
+                          "chat_number:" + r.value,
+                          VoiceCommand.internationalPhone(r.value) != null ? r.value : ""));
+              copy(
+                  box,
+                  "Keep your notification match",
+                  "This number only opens the chat. Your existing sender name and readout settings"
+                      + " stay the same. Clear it to remove the saved chat number.");
+              AlertDialog dialog =
+                  new AlertDialog.Builder(this)
+                      .setTitle(r.label)
+                      .setView(box)
+                      .setNegativeButton("Cancel", null)
+                      .setPositiveButton("Save", null)
+                      .create();
+              dialog.setOnShowListener(
+                  d ->
+                      dialog
+                          .getButton(AlertDialog.BUTTON_POSITIVE)
+                          .setOnClickListener(
+                              b -> {
+                                String number = phone.getText().toString().trim();
+                                if (!number.isEmpty()
+                                    && VoiceCommand.internationalPhone(number) == null) {
+                                  phone.setError("Use +country code and the full phone number.");
+                                  return;
+                                }
+                                if (number.isEmpty())
+                                  Rules.prefs(this).edit().remove("chat_number:" + r.value).apply();
+                                else
+                                  Rules.prefs(this)
+                                      .edit()
+                                      .putString("chat_number:" + r.value, number)
+                                      .apply();
+                                dialog.dismiss();
+                              }));
+              dialog.show();
+            });
         Switch reply =
             toggle(
                 c,
@@ -926,6 +1060,10 @@ public class MainActivity extends Activity {
                             current.removeIf(
                                 item -> item.type.equals(r.type) && item.value.equals(r.value));
                             Rules.save(this, current);
+                            if (r.type.equals("WhatsApp")) {
+                              Rules.prefs(this).edit().remove("chat_number:" + r.value).apply();
+                              ReplyRegistry.revokeContact(this, r.value);
+                            }
                             render();
                           })
                       .setNegativeButton("Keep sender", null)
@@ -1076,9 +1214,16 @@ public class MainActivity extends Activity {
   @Override
   protected void onResume() {
     super.onResume();
+    visibleActivity = this;
     if (testCallMonitor != null) testCallMonitor.start();
     Rules.prefs(this).edit().putLong("refresh_call_monitor", System.nanoTime()).apply();
     if (layout != null) showPage(false);
+  }
+
+  @Override
+  protected void onPause() {
+    if (visibleActivity == this) visibleActivity = null;
+    super.onPause();
   }
 
   @Override

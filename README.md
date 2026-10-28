@@ -1,6 +1,6 @@
 # Priority Voice for Android
 
-[Download Priority Voice v2.1 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v2.1.apk)
+[Download Priority Voice v2.2 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v2.2.apk)
 
 Install over the previous version to retain your saved senders and settings. The signed APK is stored in `releases/`, with its checksum in `releases/SHA256SUMS`. This is a personal-testing debug build.
 
@@ -195,3 +195,16 @@ Confirm the all-contact switch and the sender's message readout switch are on, a
 Only after ordinary readouts work, restart hands-free listening and test the Yes → dictate → Yes reply flow. If the phone is still silent, provide the text shown under Readout status and whether Try sound & voice works. This separates connection, sender matching, schedule/call pauses, and speech-engine failures without sharing private messages.
 
 New regression tests cover microphone release before TTS (without waiting for onStart), canceled delayed playback, independent expiring reply ownership, process restart, real-call versus microphone mode, and retrying without accepting stale utterance callbacks. Actual Android engine behavior and Samsung notification delivery still require phone validation.
+
+
+## Wake phrase and app opening (v2.2)
+
+In Settings → Hands-free commands, optionally turn on **Require wake phrase** (default **Hey Priority**) and change it to a phrase of at least two words. Start the hands-free session while the phone is visible and unlocked. Say “Hey Priority, open Spotify”, “Hey Priority, open WhatsApp”, or “Hey Priority, open Gmail”. Each app has an independent allow switch, enabled initially. You can also say the phrase alone, wait for “I'm listening”, then give a command within 15 seconds. Reply questions still accept Yes/No without the phrase; “Stop listening” always ends the session.
+
+For a listed WhatsApp contact, go to Senders → **Set WhatsApp chat number** and save the full international number, such as `+91…`. This does not change the sender name used to match notifications or the contact's alert switches. Say “Hey Priority, open WhatsApp chat with Anita” using that contact's exact saved label. A duplicate name is rejected. A phone number already used as the sender entry also works. Opening a chat does not send anything and does not require an active notification; sending with the existing voice-reply feature still requires a live notification Reply action and explicit draft confirmation.
+
+Android restricts background app launches. For hands-free opening while Priority Voice is in the background, use **Allow floating control for hands-free app opening**, grant Android's Display over other apps permission, then restart the listening session. A visible “Voice • Stop” control stays on screen during eligible listening and stops the session when tapped. It hides when calls, locking, quiet hours, or disabled alerts pause the session. Without overlay permission, voice requests from the background instead post a tap-to-open notification. A notification fallback is also left when an overlay launch is attempted because manufacturers may silently block a launch. No accessibility service or unrestricted app launching is used. Only the three allowed packages and saved WhatsApp numbers can be opened.
+
+This is phrase gating using Android speech recognition, not a dedicated low-power hotword engine. The user must start a microphone foreground session; it does not wake a stopped app, auto-start at boot, or listen while locked. Recognition may have gaps, consume battery, or use the installed provider's network; the app saves no audio. On-device recognition is preferred when available. Calls and readout audio retain priority over listening. Existing automatic reply offers remain optional and do not need the wake phrase.
+
+Validation: compilation, JVM tests, and Android lint pass. On a Galaxy A54, verify combined and separate wake commands, app allow switches, a number-linked named contact without changing its notification match, background opening with and without overlay permission, lock/call pauses, and notification readouts with the wake session running. Physical-device behavior has not been verified in this workspace.

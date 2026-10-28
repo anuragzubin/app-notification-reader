@@ -21,9 +21,47 @@ public class HandsFreeService extends Service implements RecognitionListener {
   private final ReplyOfferQueue offers = new ReplyOfferQueue();
   private boolean ready, listening, speaking, paused, closed;
   private int errors, attempts;
+  private long wakeUntil;
+  private android.view.View floatingControl;
+
+  private void showFloatingControl() {
+    if (!android.provider.Settings.canDrawOverlays(this)) return;
+    android.widget.Button button = new android.widget.Button(this);
+    button.setText("Voice • Stop");
+    button.setContentDescription("Stop voice listening");
+    button.setOnClickListener(v -> stopSelf());
+    android.view.WindowManager.LayoutParams params =
+        new android.view.WindowManager.LayoutParams(
+            android.view.WindowManager.LayoutParams.WRAP_CONTENT,
+            android.view.WindowManager.LayoutParams.WRAP_CONTENT,
+            android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            android.graphics.PixelFormat.TRANSLUCENT);
+    params.gravity = android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL;
+    try {
+      getSystemService(android.view.WindowManager.class).addView(button, params);
+      floatingControl = button;
+    } catch (SecurityException | android.view.WindowManager.BadTokenException e) {
+      floatingControl = null;
+    }
+  }
+
+  private void hideFloatingControl() {
+    if (floatingControl == null) return;
+    try {
+      getSystemService(android.view.WindowManager.class).removeView(floatingControl);
+    } catch (IllegalArgumentException ignored) {
+    }
+    floatingControl = null;
+  }
+
   private final android.content.SharedPreferences.OnSharedPreferenceChangeListener readoutChanged =
       (prefs, key) -> {
-        if ("reader_speaking_until".equals(key) && readerSpeaking()) releaseMicrophone();
+        if ("reader_speaking_until".equals(key) && readerSpeaking()) {
+          wakeUntil = 0;
+          releaseMicrophone();
+        }
         if ("reply_offer_token".equals(key)) collectOffer();
         if ("reply_route_revision".equals(key)) discardInvalidOffers();
         if ("auto_reply_offer".equals(key) && !prefs.getBoolean("auto_reply_offer", true)) {
@@ -41,6 +79,8 @@ public class HandsFreeService extends Service implements RecognitionListener {
           if (readerSpeaking() && listening) releaseMicrophone();
           if (!allowed && !paused) {
             paused = true;
+            wakeUntil = 0;
+            hideFloatingControl();
             cancelRecognition();
             promptId = null;
             if (tts != null) tts.stop();
@@ -52,6 +92,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
           }
           if (allowed && paused) {
             paused = false;
+            showFloatingControl();
             notice("Listening · say Send text to a listed contact.");
             scheduleListen(700);
           }
@@ -68,6 +109,9 @@ public class HandsFreeService extends Service implements RecognitionListener {
             flow.reset();
             prompt("Reply canceled because no response was heard.");
           }
+          if (floatingControl != null
+              && !android.provider.Settings.canDrawOverlays(HandsFreeService.this))
+            hideFloatingControl();
           if (allowed && !paused) askAfterReadouts();
           if (allowed && !paused && !speaking && !listening && ready) scheduleListen(500);
           handler.postDelayed(this, 500);
@@ -111,6 +155,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
     ReplyRegistry.Target target = ReplyRegistry.get(this, next.token);
     if (target == null || !target.ready) return;
     attempts = 0;
+    wakeUntil = 0;
     flow.offer(target.token, target.label);
     prompt("Do you want to reply to " + target.label + "? Say Yes or No.");
   }
@@ -154,6 +199,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
               }
             });
     calls.start();
+    if (allowed()) showFloatingControl();
     if (!SpeechRecognizer.isRecognitionAvailable(this)) {
       fail("No speech recognition provider is installed. Check Android voice input settings.");
       return;
@@ -175,7 +221,13 @@ public class HandsFreeService extends Service implements RecognitionListener {
                       .build());
               prompt(
                   "Hands free is ready. After WhatsApp readouts I will ask if you want to reply."
-                      + " Say Yes to reply, then Yes after the draft readback to send. Say Stop"
+                      + " Say Yes to reply, then Yes after the draft readback to send. "
+                      + (Rules.prefs(this).getBoolean("wake_enabled", false)
+                          ? "For new commands say "
+                              + Rules.prefs(this).getString("wake_phrase", "Hey Priority")
+                              + ". "
+                          : "")
+                      + "Say Stop"
                       + " listening to finish.");
             });
     tts.setOnUtteranceProgressListener(
@@ -317,6 +369,23 @@ public class HandsFreeService extends Service implements RecognitionListener {
       stopSelf();
       return;
     }
+    if (flow.stage == HandsFreeFlow.Stage.COMMAND
+        && Rules.prefs(this).getBoolean("wake_enabled", false)) {
+      String command =
+          VoiceCommand.afterWake(words, Rules.prefs(this).getString("wake_phrase", "Hey Priority"));
+      if (command != null) {
+        words = command;
+        wakeUntil = SystemClock.elapsedRealtime() + 15000;
+        if (command.isEmpty()) {
+          prompt("I'm listening. What would you like to open or do?");
+          return;
+        }
+      } else if (SystemClock.elapsedRealtime() >= wakeUntil) {
+        scheduleListen(650);
+        return;
+      }
+      wakeUntil = 0;
+    }
     if (VoiceCommand.cancel(words)) {
       flow.reset();
       prompt("Canceled. Say Send text to a contact, or Stop listening.");
@@ -340,6 +409,15 @@ public class HandsFreeService extends Service implements RecognitionListener {
       return;
     }
     if (flow.stage == HandsFreeFlow.Stage.COMMAND) {
+      String open = VoiceCommand.openTarget(words);
+      if (open != null) {
+        releaseMicrophone();
+        // Leave a tap fallback even if an OEM silently blocks the overlay launch.
+        prompt(
+            VoiceAppLauncher.open(
+                this, open, floatingControl != null && floatingControl.isShown()));
+        return;
+      }
       String spoken = VoiceCommand.recipient(words);
       if (spoken == null) {
         scheduleListen(650);
@@ -535,6 +613,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
   @Override
   public void onDestroy() {
     closed = true;
+    hideFloatingControl();
     Rules.prefs(this).unregisterOnSharedPreferenceChangeListener(readoutChanged);
     handler.removeCallbacksAndMessages(null);
     cancelRecognition();

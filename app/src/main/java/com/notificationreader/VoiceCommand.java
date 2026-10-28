@@ -17,6 +17,23 @@ final class VoiceCommand {
     return match.matches() ? match.group(1) : null;
   }
 
+  static String afterWake(String speech, String phrase) {
+    String words = normalize(speech), wake = normalize(phrase);
+    if (wake.isEmpty()) return null;
+    if (words.equals(wake)) return "";
+    return words.startsWith(wake + " ") ? words.substring(wake.length() + 1) : null;
+  }
+
+  static String openTarget(String speech) {
+    String words = normalize(speech);
+    return words.startsWith("open ") ? words.substring(5) : null;
+  }
+
+  static String internationalPhone(String value) {
+    String number = value.trim().replaceAll("[\\s().-]", "");
+    return number.matches("\\+[1-9][0-9]{6,14}") ? number.substring(1) : null;
+  }
+
   static boolean yes(String speech) {
     return normalize(speech).equals("yes");
   }
