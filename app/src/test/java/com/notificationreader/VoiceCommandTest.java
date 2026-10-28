@@ -34,4 +34,14 @@ public class VoiceCommandTest {
     assertFalse(VoiceCommand.cancel("Cancel my meeting"));
     assertFalse(VoiceCommand.stop("Please don't stop listening"));
   }
+
+  @Test
+  public void conversationalAnswersMustBeStandaloneYesOrNo() {
+    assertTrue(VoiceCommand.yes("Yes."));
+    assertTrue(VoiceCommand.no("No!"));
+    assertFalse(VoiceCommand.yes("Don't say yes"));
+    assertFalse(VoiceCommand.yes("yes no"));
+    assertFalse(VoiceCommand.no("no problems"));
+    assertFalse(VoiceCommand.no("I said no"));
+  }
 }

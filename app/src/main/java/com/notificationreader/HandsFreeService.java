@@ -18,11 +18,18 @@ public class HandsFreeService extends Service implements RecognitionListener {
   private TextToSpeech tts;
   private CallMonitor calls;
   private final HandsFreeFlow flow = new HandsFreeFlow();
+  private final ReplyOfferQueue offers = new ReplyOfferQueue();
   private boolean ready, listening, speaking, paused, closed;
   private int errors, attempts;
   private final android.content.SharedPreferences.OnSharedPreferenceChangeListener readoutChanged =
       (prefs, key) -> {
         if ("reader_speaking_until".equals(key) && readerSpeaking()) cancelRecognition();
+        if ("reply_offer_token".equals(key)) collectOffer();
+        if ("reply_route_revision".equals(key)) discardInvalidOffers();
+        if ("auto_reply_offer".equals(key) && !prefs.getBoolean("auto_reply_offer", true)) {
+          offers.clear();
+          if (flow.stage == HandsFreeFlow.Stage.OFFER) cancelConversation();
+        }
       };
   private long lastResult, renew;
   private final Runnable tick =
@@ -34,9 +41,11 @@ public class HandsFreeService extends Service implements RecognitionListener {
           if (!allowed && !paused) {
             paused = true;
             cancelRecognition();
+            promptId = null;
             if (tts != null) tts.stop();
             speaking = false;
             flow.reset();
+            offers.clear();
             hold(false);
             notice("Paused · unlock your phone, end calls and enable alerts outside quiet hours.");
           }
@@ -52,11 +61,52 @@ public class HandsFreeService extends Service implements RecognitionListener {
             flow.reset();
             prompt("Reply canceled because no response was heard.");
           }
+          if (allowed && !paused) askAfterReadouts();
           if (allowed && !paused && !speaking && !listening && ready) scheduleListen(500);
           handler.postDelayed(this, 500);
         }
       };
   private final Runnable listenTask = this::listen;
+
+  private void cancelConversation() {
+    cancelRecognition();
+    if (tts != null) tts.stop();
+    promptId = null;
+    speaking = false;
+    flow.reset();
+    hold(false);
+  }
+
+  private void collectOffer() {
+    if (!Rules.prefs(this).getBoolean("auto_reply_offer", true) || !allowed()) return;
+    String token = Rules.prefs(this).getString("reply_offer_token", "");
+    ReplyRegistry.Target target = ReplyRegistry.get(this, token);
+    if (target != null && target.ready)
+      offers.add(target.stream, target.token, SystemClock.elapsedRealtime());
+  }
+
+  private void discardInvalidOffers() {
+    for (ReplyOfferQueue.Offer offer : offers.snapshot())
+      if (ReplyRegistry.get(this, offer.token) == null) offers.remove(offer.token);
+    if (flow.token != null && ReplyRegistry.get(this, flow.token) == null) cancelConversation();
+  }
+
+  private void askAfterReadouts() {
+    if (!ready
+        || !allowed()
+        || readerSpeaking()
+        || speaking
+        || flow.stage != HandsFreeFlow.Stage.COMMAND
+        || !Rules.prefs(this).getBoolean("auto_reply_offer", true)) return;
+    discardInvalidOffers();
+    ReplyOfferQueue.Offer next = offers.take(SystemClock.elapsedRealtime());
+    if (next == null) return;
+    ReplyRegistry.Target target = ReplyRegistry.get(this, next.token);
+    if (target == null || !target.ready) return;
+    attempts = 0;
+    flow.offer(target.token, target.label);
+    prompt("Do you want to reply to " + target.label + "? Say Yes or No.");
+  }
 
   @Override
   public void onCreate() {
@@ -88,9 +138,11 @@ public class HandsFreeService extends Service implements RecognitionListener {
             busy -> {
               if (busy) {
                 cancelRecognition();
+                promptId = null;
                 if (tts != null) tts.stop();
                 speaking = false;
                 flow.reset();
+                offers.clear();
                 hold(false);
               }
             });
@@ -122,7 +174,8 @@ public class HandsFreeService extends Service implements RecognitionListener {
                       .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
                       .build());
               prompt(
-                  "Hands free is ready. Say, Send text to, followed by the contact name. Say Stop"
+                  "Hands free is ready. After WhatsApp readouts I will ask if you want to reply."
+                      + " Say Yes to reply, then Yes after the draft readback to send. Say Stop"
                       + " listening to finish.");
             });
     tts.setOnUtteranceProgressListener(
@@ -136,6 +189,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
           public void onError(String id) {
             handler.post(
                 () -> {
+                  if (!id.equals(promptId) || closed) return;
                   speaking = false;
                   flow.reset();
                   hold(false);
@@ -241,6 +295,23 @@ public class HandsFreeService extends Service implements RecognitionListener {
       prompt("Canceled. Say Send text to a contact, or Stop listening.");
       return;
     }
+    if (flow.stage == HandsFreeFlow.Stage.OFFER) {
+      if (VoiceCommand.no(words)) {
+        flow.reset();
+        prompt("Okay. No reply sent.");
+        return;
+      }
+      if (flow.acceptOffer(words)) {
+        attempts = 0;
+        prompt("What would you like to say to " + flow.name + "?");
+        return;
+      }
+      if (++attempts >= 3) {
+        flow.reset();
+        prompt("No reply sent.");
+      } else prompt("Do you want to reply? Say Yes or No.");
+      return;
+    }
     if (flow.stage == HandsFreeFlow.Stage.COMMAND) {
       String spoken = VoiceCommand.recipient(words);
       if (spoken == null) {
@@ -272,6 +343,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
                 + " Wait for a new direct message and readout, then try again.");
         return;
       }
+      offers.remove(target.token);
       flow.begin(target.token, rule.label);
       attempts = 0;
       prompt("What would you like to say to " + flow.name + "?");
@@ -289,14 +361,20 @@ public class HandsFreeService extends Service implements RecognitionListener {
               + flow.name
               + ". "
               + flow.message
-              + ". Say Send it now to send this text, or Cancel to discard it.");
+              + ". Is that correct? Say Yes to send, or No to record your message again.");
       return;
     }
-    if (!VoiceCommand.send(words)) {
+    if (VoiceCommand.no(words)) {
+      flow.rerecord();
+      attempts = 0;
+      prompt("Please say your message again.");
+      return;
+    }
+    if (!(VoiceCommand.yes(words) || VoiceCommand.send(words))) {
       if (++attempts >= 3) {
         flow.reset();
         prompt("Canceled. Please start again.");
-      } else prompt("Say Send it now to confirm, or Cancel.");
+      } else prompt("Is that correct? Say Yes to send, No to record again, or Cancel.");
       return;
     }
     String token = flow.token, message = flow.message;

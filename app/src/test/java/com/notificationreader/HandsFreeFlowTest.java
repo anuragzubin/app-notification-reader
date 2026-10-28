@@ -28,9 +28,9 @@ public class HandsFreeFlowTest {
     f.begin("token", "Alex");
     f.dictate("Send it now");
     assertEquals(HandsFreeFlow.Stage.CONFIRM, f.stage);
-    assertFalse(f.confirm("yes"));
+    assertFalse(f.confirm("yes do not send"));
     assertFalse(f.confirm("don't send it now"));
-    assertTrue(f.confirm("Send it now"));
+    assertTrue(f.confirm("Yes"));
   }
 
   @Test
@@ -63,5 +63,68 @@ public class HandsFreeFlowTest {
     assertFalse(f.dictate(" "));
     assertFalse(f.dictate("a".repeat(2001)));
     assertEquals(HandsFreeFlow.Stage.MESSAGE, f.stage);
+  }
+
+  @Test
+  public void firstYesOnlyStartsDictationAndSecondYesSends() {
+    HandsFreeFlow f = new HandsFreeFlow();
+    f.offer("anita-token", "Anita");
+    assertEquals(HandsFreeFlow.Stage.OFFER, f.stage);
+    assertFalse(f.confirm("Yes"));
+    assertTrue(f.acceptOffer("Yes"));
+    assertEquals(HandsFreeFlow.Stage.MESSAGE, f.stage);
+    assertNull(f.message);
+    assertFalse(f.confirm("Yes"));
+    assertTrue(f.dictate("I'll arrive at seven"));
+    assertTrue(f.confirm("Yes"));
+    assertFalse(f.confirm("Yes"));
+  }
+
+  @Test
+  public void offerDoesNotMistakeSpeechForDraftOrConsent() {
+    HandsFreeFlow f = new HandsFreeFlow();
+    f.offer("token", "Anita");
+    assertFalse(f.dictate("Hello"));
+    assertFalse(f.acceptOffer("No"));
+    assertFalse(f.acceptOffer("Don't say yes"));
+    assertFalse(f.confirm("Yes"));
+  }
+
+  @Test
+  public void rejectingDraftRequiresFreshDictationAndConfirmation() {
+    HandsFreeFlow f = new HandsFreeFlow();
+    f.offer("token", "Anita");
+    f.acceptOffer("Yes");
+    f.dictate("Wrong draft");
+    assertTrue(f.rerecord());
+    assertNull(f.message);
+    assertFalse(f.confirm("Yes"));
+    assertTrue(f.dictate("Correct draft"));
+    assertEquals("Correct draft", f.message);
+    assertTrue(f.confirm("Yes"));
+  }
+
+  @Test
+  public void declineOrInvalidatedNotificationDropsOfferedRecipient() {
+    HandsFreeFlow f = new HandsFreeFlow();
+    f.offer("old-token", "Anita");
+    f.reset();
+    assertNull(f.token);
+    assertFalse(f.acceptOffer("Yes"));
+    assertFalse(f.confirm("Yes"));
+    f.offer("new-token", "Anita");
+    assertTrue(f.acceptOffer("Yes"));
+    assertEquals("new-token", f.token);
+  }
+
+  @Test
+  public void messageYesIsAValidDraftRatherThanSendingEarly() {
+    HandsFreeFlow f = new HandsFreeFlow();
+    f.offer("token", "Anita");
+    f.acceptOffer("Yes");
+    assertTrue(f.dictate("Yes"));
+    assertEquals(HandsFreeFlow.Stage.CONFIRM, f.stage);
+    assertEquals("Yes", f.message);
+    assertTrue(f.confirm("Yes"));
   }
 }

@@ -17,6 +17,14 @@ final class VoiceCommand {
     return match.matches() ? match.group(1) : null;
   }
 
+  static boolean yes(String speech) {
+    return normalize(speech).equals("yes");
+  }
+
+  static boolean no(String speech) {
+    return normalize(speech).equals("no");
+  }
+
   static boolean send(String speech) {
     return normalize(speech).equals("send it now");
   }

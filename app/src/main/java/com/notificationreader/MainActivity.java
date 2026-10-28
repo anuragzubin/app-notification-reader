@@ -481,8 +481,18 @@ public class MainActivity extends Activity {
     copy(
         card,
         "Send text with your voice",
-        "Start a microphone session, then say “Send text to Alex.” Dictate your message and say"
-            + " “Send it now” after the readback.");
+        "After a contact's WhatsApp readouts, hear “Do you want to reply?” Say Yes, dictate, then"
+            + " say Yes after the draft readback to send.");
+    Switch automatic =
+        toggle(
+            card,
+            "Ask after WhatsApp readouts",
+            "Offer a reply after the contact's latest readout, then listen for Yes or No.",
+            "",
+            Rules.prefs(this).getBoolean("auto_reply_offer", true));
+    automatic.setOnCheckedChangeListener(
+        (button, checked) ->
+            Rules.prefs(this).edit().putBoolean("auto_reply_offer", checked).apply());
     handsFreeStatus = label("", 14, R.color.accent, true);
     card.addView(handsFreeStatus);
     updateHandsFreeStatus();
@@ -715,7 +725,7 @@ public class MainActivity extends Activity {
             + " is kept. Silent mode and Do Not Disturb are respected.");
     action(privacy, "Sender matching & Samsung tips", false, v -> showHelp());
     gap(layout, 8);
-    layout.addView(label("PRIORITY VOICE  /  1.9", 11, R.color.muted, true));
+    layout.addView(label("PRIORITY VOICE  /  2.0", 11, R.color.muted, true));
   }
 
   private void render() {
@@ -771,7 +781,7 @@ public class MainActivity extends Activity {
             toggle(
                 c,
                 "Reply by voice",
-                "Dictate a text reply, review it, then confirm sending.",
+                "Ask to reply after readouts; dictate and confirm by voice.",
                 r.label,
                 r.voiceReply);
         reply.setOnCheckedChangeListener(

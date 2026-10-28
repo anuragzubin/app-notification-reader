@@ -115,7 +115,9 @@ final class ReplyRegistry {
     if (!Rules.prefs(c).getBoolean("enabled", true) || QuietHours.active(c)) return;
     for (Target t : new ArrayList<>(targets.values())) {
       if (!t.event.equals(event) || get(c, t.token) == null) continue;
+      if (t.ready) return; // Do not re-offer an already completed message on a replay.
       t.ready = true;
+      Rules.prefs(c).edit().putString("reply_offer_token", t.token).apply();
       if (android.os.Build.VERSION.SDK_INT >= 33
           && c.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
               != android.content.pm.PackageManager.PERMISSION_GRANTED) return;
@@ -186,7 +188,10 @@ final class ReplyRegistry {
 
   private static void revoke(Context c, String token) {
     Target t = targets.remove(token);
-    if (t != null) c.getSystemService(NotificationManager.class).cancel(t.notificationId());
+    if (t != null) {
+      c.getSystemService(NotificationManager.class).cancel(t.notificationId());
+      Rules.prefs(c).edit().putLong("reply_route_revision", System.nanoTime()).apply();
+    }
   }
 
   static synchronized void clear(Context c) {

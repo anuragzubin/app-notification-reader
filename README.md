@@ -1,6 +1,6 @@
 # Priority Voice for Android
 
-[Download Priority Voice v1.9 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v1.9.apk)
+[Download Priority Voice v2.0 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v2.0.apk)
 
 Install over the previous version to retain your saved senders and settings. The signed APK is stored in `releases/`, with its checksum in `releases/SHA256SUMS`. This is a personal-testing debug build.
 
@@ -154,3 +154,24 @@ The microphone runs as an explicitly user-started foreground session with a visi
 Listening pauses during notification readouts and the app's own spoken prompts to avoid recognizing its own output. Notification readouts wait during dictation/confirmation and resume afterward. Calls, screen lock, quiet hours, silent/DND, and the master off switch suspend listening and sending. The phone must be unlocked; this does not bypass Android lock-screen security or provide an OS-level wake word. Samsung background restrictions and the selected speech provider affect continuous recognition; real device testing is required. If recognition fails repeatedly, the session stops and Settings displays the last error.
 
 Tests cover command parsing, exact and negated confirmations, no send before dictation, separate-turn confirmation, duplicate-confirmation prevention, cancellation/reset, and transcript bounds. Phone validation: receive a direct message from an opted-in test contact, let the readout finish, start the session, issue the command, dictate a harmless text, cancel once, then retry and say Send it now. Verify the recipient receives exactly one confirmed message. Test absent/cleared Reply actions, duplicate names, group chats, calls, locked screen, quiet hours, and disabling the contact or master switch mid-flow. No real WhatsApp sends or microphone background behavior have been verified in the cloud environment.
+
+## Version 2.0 — conversational Yes → message → Yes replies
+
+With **Reply by voice** enabled for Anita and a hands-free listening session started, the app now offers the conversation automatically:
+
+- Anita sends a direct WhatsApp message; Priority Voice reads it.
+- After the latest completed readout and a 2.5-second settling pause: **“Do you want to reply to Anita? Say Yes or No.”**
+- You say **“Yes.”** The app asks what you want to say; this first Yes does not send anything.
+- You dictate **“I'll arrive around seven.”**
+- The app reads the text and recipient back, then asks **“Is that correct? Say Yes to send, or No to record your message again.”**
+- You say **“Yes.”** The app hands that transcribed text to the original WhatsApp notification Reply action.
+
+Saying No at the initial offer skips the reply. Saying No after draft readback discards that draft and asks you to dictate again. Cancel discards the current conversation; Stop listening ends the session. The original **Send text to [name]** command remains available. Its final confirmation now accepts Yes too; Send it now remains supported for compatibility.
+
+**Settings → Hands-free commands → Ask after WhatsApp readouts** defaults on. The existing per-contact Reply by voice switch still controls eligibility. Android still requires a one-time explicit Start listening action from the visible app and an unlocked phone for a session; a notification alone does not silently start background microphone access. There are no additional permissions in this update.
+
+The app cannot know whether a contact will send another message in the future. It waits 2.5 seconds after the latest completed readout before asking. Closely arriving readouts from the same conversation replace the pending offer; new messages invalidate an older offer or unfinished reply and allow a fresh question after the newer readout. Offers from different contacts are retained separately. Readouts already queued or speaking finish before an offer can start. A successful replay of an already-offered message does not ask again. This preserves the existing latest-message readout behavior rather than rereading old undismissed notifications.
+
+All earlier platform limits remain: direct WhatsApp notifications must expose a usable Reply action and explicit non-group metadata; clearing or expiring that notification invalidates the reply. Calls, screen lock, silent/DND, master off, and quiet hours prevent the conversation from sending; interrupted drafts require a fresh conversation. No unsolicited or unconfirmed text is sent.
+
+Phone test: have Anita send two messages close together. Confirm the question occurs once after the latest completed readout. Say Yes, dictate, then No; confirm it asks for a replacement message. Dictate again and say Yes after readback, and verify Anita receives only that final text. Also test No at the initial offer, Cancel, a new Anita message arriving while the question is being asked, another contact's messages, and clearing the WhatsApp notification before final confirmation. Automated tests cover the separate Yes stages, rerecording, cancellation, stale offers, and burst timing; actual recognition and WhatsApp sending require phone validation.
