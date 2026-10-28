@@ -590,6 +590,17 @@ public class MainActivity extends Activity {
         (button, checked) ->
             Rules.prefs(this).edit().putBoolean("prefer_device_recognition", checked).apply());
     action(card, "Test wake phrase", false, v -> testWakePhrase());
+    Switch commandDialog =
+        toggle(
+            card,
+            "Show command dialog",
+            "After the wake phrase, show Android voice input and the recognized command before"
+                + " running it. Background display needs the floating control permission.",
+            "",
+            Rules.prefs(this).getBoolean("show_command_dialog", true));
+    commandDialog.setOnCheckedChangeListener(
+        (button, checked) ->
+            Rules.prefs(this).edit().putBoolean("show_command_dialog", checked).apply());
     Switch wake =
         toggle(
             card,
@@ -1022,6 +1033,24 @@ public class MainActivity extends Activity {
                     dialog.dismiss();
                     appRemindersDialog();
                   }));
+      String spokenAlias = Rules.prefs(this).getString("spoken_alias:" + app.id, "");
+      appCard.addView(
+          label(
+              spokenAlias.isEmpty() ? "Say: Open " + app.label : "Also say: Open " + spokenAlias,
+              13,
+              R.color.accent,
+              true));
+      action(
+          appCard,
+          "Change spoken alias",
+          false,
+          v ->
+              setSpokenAlias(
+                  app,
+                  () -> {
+                    dialog.dismiss();
+                    appRemindersDialog();
+                  }));
       Switch enabled =
           toggle(
               appCard,
@@ -1077,6 +1106,48 @@ public class MainActivity extends Activity {
                 .show();
           });
     }
+    dialog.show();
+  }
+
+  private void setSpokenAlias(AppCatalog.App app, Runnable refresh) {
+    LinearLayout box = column();
+    EditText alias = field(box, "Optional spoken name", "For example, Reading or Learning");
+    alias.setText(Rules.prefs(this).getString("spoken_alias:" + app.id, ""));
+    copy(
+        box,
+        app.label,
+        "Use a short name Android recognizes easily. Say Open followed by this name. Clear it to"
+            + " remove the alias. The app's usual name still works.");
+    AlertDialog dialog =
+        new AlertDialog.Builder(this)
+            .setTitle("Spoken alias for " + app.label)
+            .setView(box)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save", null)
+            .create();
+    dialog.setOnShowListener(
+        d ->
+            dialog
+                .getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(
+                    v -> {
+                      String value = VoiceCommand.normalize(alias.getText().toString());
+                      if (!value.isEmpty()) {
+                        java.util.Map<String, String> aliases = InstalledApps.speechAliases(this);
+                        aliases.put(app.id, value);
+                        if (value.length() < 2
+                            || value.length() > 40
+                            || !app.id.equals(AppSpeech.resolve(value, aliases))) {
+                          alias.setError(
+                              "Choose a unique name, 2–40 characters, that does not name another"
+                                  + " allowed app.");
+                          return;
+                        }
+                      }
+                      Rules.prefs(this).edit().putString("spoken_alias:" + app.id, value).apply();
+                      dialog.dismiss();
+                      refresh.run();
+                    }));
     dialog.show();
   }
 

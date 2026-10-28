@@ -30,28 +30,68 @@ final class VoiceCommand {
         .replaceAll("\\bg mail\\b|\\bgoogle mail\\b", "gmail")
         .replaceAll("\\bspot ify\\b", "spotify")
         .replaceAll("\\bdeep stash\\b", "deepstash")
-        .replaceAll("\\bduo lingo\\b", "duolingo");
+        .replaceAll("\\bduo lingo\\b|\\bdual lingo\\b|\\bdo a lingo\\b", "duolingo")
+        .replaceAll("\\bdeep stache\\b", "deepstash")
+        .replaceAll("\\btry a\\b|\\btraiya\\b|\\btraya health\\b", "traya");
   }
 
   static String selectCommand(
       java.util.List<String> candidates, String phrase, boolean requireWake, boolean awake) {
+    return selectCommand(candidates, phrase, requireWake, awake, java.util.Collections.emptyMap());
+  }
+
+  static String selectCommand(
+      java.util.List<String> candidates,
+      String phrase,
+      boolean requireWake,
+      boolean awake,
+      java.util.Map<String, String> aliases) {
     if (candidates == null || candidates.isEmpty()) return "";
-    // Only command mode uses alternatives. Dictation and Yes/No keep the first result.
+    String selected = candidates.get(0);
+    int highest = -1;
     for (String candidate : candidates) {
+      if (candidate == null) continue;
+      if (stop(candidate)) return candidate;
       String after = afterWake(candidate, phrase);
       if (requireWake && !awake && after == null) continue;
       String command = after != null ? after : candidate;
-      if (after != null
-          || openTarget(command) != null
-          || recipient(command) != null
-          || stop(candidate)) return candidate;
+      int rank =
+          AppSpeech.target(command, aliases) != null
+              ? 100
+              : recipient(command) != null
+                  ? 90
+                  : after != null && after.isEmpty()
+                      ? 70
+                      : after != null ? 10 : openTarget(command) != null ? 5 : 0;
+      if (rank > highest) {
+        highest = rank;
+        selected = candidate;
+      }
     }
-    return candidates.get(0);
+    return selected;
   }
 
   static String openTarget(String speech) {
-    String words = commandWords(speech);
-    return words.startsWith("open ") ? words.substring(5) : null;
+    String words = normalize(speech);
+    // Permit common complete request forms, never embedded mentions such as "Anita said open".
+    words =
+        words.replaceFirst(
+            "^(?:can you |could you )?(?:please )?(?:open|launch)(?: up)? +", "open ");
+    if (!words.startsWith("open ")) {
+      // Some providers join a short command and app name into a single word.
+      if (words.startsWith("open")) {
+        String joined = commandWords(words.substring(4));
+        if (AppCatalog.find(joined) != null) return joined;
+      }
+      return null;
+    }
+    String target = words.substring(5).trim();
+    Matcher chat =
+        Pattern.compile("^(?:whatsapp|whats app|what s app|what app) chat (with|of) (.+)$")
+            .matcher(target);
+    if (chat.matches()) return "whatsapp chat " + chat.group(1) + " " + chat.group(2);
+    target = commandWords(target).replaceFirst(" please$", "").trim();
+    return target.isEmpty() ? null : target;
   }
 
   static String internationalPhone(String value) {

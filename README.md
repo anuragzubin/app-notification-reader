@@ -1,6 +1,6 @@
 # Priority Voice for Android
 
-[Download Priority Voice v2.5 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v2.5.apk)
+[Download Priority Voice v2.6 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v2.6.apk)
 
 Install over the previous version to retain your saved senders and settings. The signed APK is stored in `releases/`, with its checksum in `releases/SHA256SUMS`. This is a personal-testing debug build.
 
@@ -256,3 +256,18 @@ At that app's time, the receiver checks local-day usage events for an activity r
 Each app can notify at most once per local calendar date. Reminders recur until that app's reminder switch is off. Existing reminder notifications expire at local midnight; disabling a reminder or changing its installed link clears its notification. Times use the phone's current timezone, and one-shot alarms are restored after reboot, app upgrade, clock/timezone changes, and exact-alarm grants. After a reboot the phone may need its first unlock. Android force-stop blocks alarms until the app is reopened. Quiet-hour/missing-permission/skipped reminders do not produce a catch-up burst; an alarm delivered on a later calendar date is dropped. Setting a time that has already passed schedules the next day.
 
 Validation covers the six-app allowlist and aliases, reply-queue retention through locked/unavailable periods and replacement/revocation, independent daily times, duplicate/stale/early delivery rejection, local midnight boundaries, and DST changes. Build, JVM tests, and lint are automated workspace checks; physical A54 validation of unlock conversations, usage-event delivery, reboot restoration, and alarms during Samsung battery restrictions remains required.
+
+
+## Visible wake-command dialog and app speech matching (v2.6)
+
+**Show command dialog** is enabled by default in Settings → Hands-free commands. Start listening, say “Hey Priority”, wait for “I'm listening”, and the app opens Android's visible speech-input dialog for your next command. Say “Open Deepstash”, “Open Duolingo”, “Open Traya”, or another allowed command. A brief **Command heard** dialog shows the selected recognition result and matched app before the command runs automatically; Cancel aborts it. With a combined phrase such as “Hey Priority, open Duolingo”, the already-recognized command is shown directly without asking you to repeat it. The visible dialog is for the new command, not every wake-listening session or every Yes/No reply turn.
+
+The background recognizer is released before the visible input starts. A bounded in-memory audio lease prevents simultaneous readout/recognition; readouts resume when the command finishes, is canceled, or times out. Results are accepted only once by the same active listening service within 90 seconds. Calls, locking, disabled alerts, expired/stopped sessions and stale results cannot execute the returned command. Speech/message send confirmation remains the existing separate flow; showing a command dialog does not bypass draft confirmation or grant new WhatsApp sending capabilities.
+
+Android's foreground/background restrictions still apply: while Priority Voice is visible, the dialog opens directly. From another app, the visible floating-control permission is needed for hands-free display. If Android blocks the launch, a **Speak an app command** notification provides a tap fallback. The phone must be unlocked, and the speech-input UI/provider may require network access. Turn off Show command dialog to retain the background command path. The dialog and transcripts are not stored in app preferences or command history.
+
+Matching now ranks recognition alternatives rather than selecting the first wake-prefixed or Open-like result, so a later exact allowed-app match wins over an earlier unrecognized app spelling. Required wake phrases remain required; dictation and confirmation still use the first transcription. Common explicit spellings, complete polite/launch request forms, and joined names such as “openduolingo” are supported without fuzzy-matching contacts or arbitrary installed apps. Chat contact names are preserved during app-name normalization.
+
+For difficult app names, use Settings → Daily app reminders & app links → the app → **Change spoken alias**. For example, set Deepstash to “Reading”, Duolingo to “Learning”, and Traya to “Hair”, then say “Open Reading”. Usual app names still work. Ambiguous aliases or aliases that name another allowed app are rejected. Installed-app links are still required when an app cannot be detected; speech aliases do not change the package used by reminders.
+
+Verification includes parser regression cases for all three new names, alternative ranking, required-wake boundaries, custom aliases and collisions, unchanged recipient names, and one-shot/expired/canceled dialog results. Build, unit tests and lint pass in the workspace; Android voice-dialog display, Samsung background restrictions, and actual speech accuracy still require a physical-device check.

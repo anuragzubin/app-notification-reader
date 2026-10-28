@@ -57,7 +57,10 @@ final class VoiceAppLauncher {
     // can reject valid links due to device-specific package visibility/default rules.
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
     try {
-      MainActivity visible = MainActivity.visibleActivity;
+      android.app.Activity visible =
+          MainActivity.visibleActivity != null
+              ? MainActivity.visibleActivity
+              : VoiceCommandActivity.visibleActivity;
       if (visible != null) {
         visible.startActivity(intent);
         return "Opening " + app + ".";

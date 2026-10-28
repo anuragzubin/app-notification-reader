@@ -73,7 +73,7 @@ public class WakeCommandTest {
   @Test
   public void openCommandDoesNotConsumeDictationOrPartialWords() {
     assertEquals("gmail", VoiceCommand.openTarget("Open Gmail"));
-    assertNull(VoiceCommand.openTarget("Please open Gmail"));
+    assertEquals("gmail", VoiceCommand.openTarget("Please open Gmail"));
     assertNull(VoiceCommand.openTarget("Opened Gmail"));
   }
 }

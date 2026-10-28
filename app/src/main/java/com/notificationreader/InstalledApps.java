@@ -5,6 +5,13 @@ import android.content.pm.*;
 import java.util.*;
 
 final class InstalledApps {
+  static Map<String, String> speechAliases(Context c) {
+    Map<String, String> aliases = new HashMap<>();
+    for (AppCatalog.App app : AppCatalog.ALL)
+      aliases.put(app.id, Rules.prefs(c).getString("spoken_alias:" + app.id, ""));
+    return aliases;
+  }
+
   static Intent launcherQuery() {
     return new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
   }

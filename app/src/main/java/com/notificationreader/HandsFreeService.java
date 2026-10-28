@@ -24,6 +24,93 @@ public class HandsFreeService extends Service implements RecognitionListener {
   private long wakeUntil;
   private boolean listenScheduled, systemRecognizer, wakeAcknowledgement;
   private int recognizerGeneration;
+  private static HandsFreeService live;
+  private boolean commandUiPending, handlingUiResult;
+  private String commandUiToken;
+  private final VoiceUiTicket commandUiTicket = new VoiceUiTicket();
+
+  static boolean commandUiValid(String token) {
+    return live != null
+        && !live.closed
+        && live.commandUiPending
+        && token != null
+        && live.commandUiTicket.valid(token, SystemClock.elapsedRealtime());
+  }
+
+  static boolean submitCommandUi(String token, ArrayList<String> words) {
+    if (!commandUiValid(token)) return false;
+    HandsFreeService service = live;
+    if (!service.commandUiTicket.consume(token, SystemClock.elapsedRealtime())) return false;
+    service.commandUiPending = false;
+    service.commandUiToken = null;
+    service.getSystemService(NotificationManager.class).cancel(52003);
+    if (words == null || words.isEmpty() || !service.allowed() || service.readerSpeaking()) {
+      service.hold(false);
+      service.wakeUntil = 0;
+      service.notice("Command canceled or unavailable. Say the wake phrase to try again.");
+      service.scheduleListen(650);
+      return false;
+    }
+    String selected =
+        VoiceCommand.selectCommand(
+            words,
+            Rules.prefs(service).getString("wake_phrase", "Hey Priority"),
+            false,
+            true,
+            InstalledApps.speechAliases(service));
+    service.wakeUntil = SystemClock.elapsedRealtime() + 15000;
+    service.handlingUiResult = true;
+    try {
+      service.handle(selected);
+    } finally {
+      service.handlingUiResult = false;
+      if (!service.speaking
+          && !service.commandUiPending
+          && service.flow.stage == HandsFreeFlow.Stage.COMMAND) service.hold(false);
+    }
+    return true;
+  }
+
+  private void showCommandUi(String alreadyHeard) {
+    if (closed || !allowed() || readerSpeaking()) return;
+    releaseMicrophone();
+    commandUiPending = true;
+    commandUiToken = UUID.randomUUID().toString();
+    commandUiTicket.issue(commandUiToken, SystemClock.elapsedRealtime());
+    turnDeadline = SystemClock.elapsedRealtime() + 90000;
+    hold(true);
+    Intent intent =
+        new Intent(this, VoiceCommandActivity.class)
+            .putExtra("token", commandUiToken)
+            .putExtra("heard", alreadyHeard)
+            .setData(android.net.Uri.parse("priorityvoice://command/" + commandUiToken));
+    PendingIntent pending =
+        PendingIntent.getActivity(
+            this, 52003, intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    getSystemService(NotificationManager.class)
+        .notify(
+            52003,
+            new Notification.Builder(this, "hands_free")
+                .setSmallIcon(R.drawable.ic_reply)
+                .setContentTitle("Speak an app command")
+                .setContentText("Tap if the voice-input dialog did not open.")
+                .setContentIntent(pending)
+                .setAutoCancel(true)
+                .setTimeoutAfter(90000)
+                .setVisibility(Notification.VISIBILITY_PRIVATE)
+                .build());
+    notice(
+        "Opening command dialog. If Android blocks it, tap Speak an app command in notifications.");
+    try {
+      if (MainActivity.visibleActivity != null) MainActivity.visibleActivity.startActivity(intent);
+      else if (floatingControl != null
+          && floatingControl.isShown()
+          && android.provider.Settings.canDrawOverlays(this))
+        startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+    } catch (android.content.ActivityNotFoundException | SecurityException e) {
+    }
+  }
+
   private final WakeEvidence wakeEvidence = new WakeEvidence();
   private android.view.View floatingControl;
 
@@ -90,6 +177,10 @@ public class HandsFreeService extends Service implements RecognitionListener {
             promptId = null;
             if (tts != null) tts.stop();
             speaking = false;
+            commandUiPending = false;
+            commandUiToken = null;
+            commandUiTicket.clear();
+            getSystemService(NotificationManager.class).cancel(52003);
             deferActiveReply();
             hold(false);
             notice("Paused · unlock your phone, end calls and enable alerts outside quiet hours.");
@@ -100,13 +191,13 @@ public class HandsFreeService extends Service implements RecognitionListener {
             notice("Listening · say Send text to a listed contact.");
             scheduleListen(700);
           }
-          if ((speaking || flow.stage != HandsFreeFlow.Stage.COMMAND)
+          if ((speaking || commandUiPending || flow.stage != HandsFreeFlow.Stage.COMMAND)
               && SystemClock.elapsedRealtime() > turnDeadline
               && turnDeadline > 0) {
             cancelConversation();
             notice("Reply timed out. Notification readouts are available again.");
           }
-          if ((speaking || flow.stage != HandsFreeFlow.Stage.COMMAND)
+          if ((speaking || commandUiPending || flow.stage != HandsFreeFlow.Stage.COMMAND)
               && SystemClock.elapsedRealtime() > renew) hold(true);
           if (listening && SystemClock.elapsedRealtime() - lastResult > 30000) {
             cancelRecognition();
@@ -117,8 +208,13 @@ public class HandsFreeService extends Service implements RecognitionListener {
               && !android.provider.Settings.canDrawOverlays(HandsFreeService.this))
             hideFloatingControl();
           if (allowed && !paused) askAfterReadouts();
-          if (allowed && !paused && !speaking && !listening && !listenScheduled && ready)
-            scheduleListen(500);
+          if (allowed
+              && !paused
+              && !speaking
+              && !commandUiPending
+              && !listening
+              && !listenScheduled
+              && ready) scheduleListen(500);
           handler.postDelayed(this, 500);
         }
       };
@@ -129,6 +225,10 @@ public class HandsFreeService extends Service implements RecognitionListener {
       };
 
   private void cancelConversation() {
+    commandUiPending = false;
+    commandUiToken = null;
+    commandUiTicket.clear();
+    getSystemService(NotificationManager.class).cancel(52003);
     wakeAcknowledgement = false;
     wakeUntil = 0;
     cancelRecognition();
@@ -171,6 +271,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
         || !allowed()
         || readerSpeaking()
         || speaking
+        || commandUiPending
         || flow.stage != HandsFreeFlow.Stage.COMMAND
         || !Rules.prefs(this).getBoolean("auto_reply_offer", true)) return;
     discardInvalidOffers();
@@ -189,6 +290,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
   @Override
   public void onCreate() {
     super.onCreate();
+    live = this;
     Rules.prefs(this).edit().remove("hands_free_error").remove("last_recognition_status").apply();
     systemRecognizer = !Rules.prefs(this).getBoolean("prefer_device_recognition", false);
     NotificationManager manager = getSystemService(NotificationManager.class);
@@ -216,6 +318,12 @@ public class HandsFreeService extends Service implements RecognitionListener {
             handler,
             busy -> {
               if (busy) {
+                commandUiPending = false;
+                commandUiToken = null;
+                commandUiTicket.clear();
+                wakeAcknowledgement = false;
+                wakeUntil = 0;
+                getSystemService(NotificationManager.class).cancel(52003);
                 cancelRecognition();
                 promptId = null;
                 if (tts != null) tts.stop();
@@ -291,6 +399,10 @@ public class HandsFreeService extends Service implements RecognitionListener {
     if (wakeAcknowledgement) {
       wakeAcknowledgement = false;
       wakeUntil = SystemClock.elapsedRealtime() + 15000;
+      if (Rules.prefs(this).getBoolean("show_command_dialog", true)) {
+        showCommandUi(null);
+        return;
+      }
     }
     if (flow.stage == HandsFreeFlow.Stage.COMMAND) hold(false);
     scheduleListen(650);
@@ -321,7 +433,13 @@ public class HandsFreeService extends Service implements RecognitionListener {
   }
 
   private void listen() {
-    if (closed || !ready || speaking || listening || !allowed() || readerSpeaking()) return;
+    if (closed
+        || !ready
+        || speaking
+        || commandUiPending
+        || listening
+        || !allowed()
+        || readerSpeaking()) return;
     Intent speech =
         new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
             .putExtra(
@@ -470,6 +588,12 @@ public class HandsFreeService extends Service implements RecognitionListener {
         return;
       }
       wakeUntil = 0;
+      if (!handlingUiResult
+          && Rules.prefs(this).getBoolean("show_command_dialog", true)
+          && !VoiceCommand.cancel(words)) {
+        showCommandUi(words);
+        return;
+      }
     }
     if (VoiceCommand.cancel(words)) {
       flow.reset();
@@ -495,6 +619,8 @@ public class HandsFreeService extends Service implements RecognitionListener {
     }
     if (flow.stage == HandsFreeFlow.Stage.COMMAND) {
       String open = VoiceCommand.openTarget(words);
+      String knownOpen = AppSpeech.target(words, InstalledApps.speechAliases(this));
+      if (knownOpen != null) open = knownOpen;
       if (open != null) {
         releaseMicrophone();
         // Leave a tap fallback even if an OEM silently blocks the overlay launch.
@@ -508,8 +634,9 @@ public class HandsFreeService extends Service implements RecognitionListener {
       if (spoken == null) {
         notice("Command not understood. Try Open followed by an allowed app name.");
         prompt(
-            "I didn't understand the command. Please say the wake phrase and Open WhatsApp, Open"
-                + " Gmail, or Open Spotify.");
+            "I didn't understand the command. Say Open followed by "
+                + AppCatalog.SPOKEN_LIST
+                + ". You can set a spoken alias in app settings.");
         return;
       }
       if (spoken.isEmpty()) {
@@ -621,7 +748,8 @@ public class HandsFreeService extends Service implements RecognitionListener {
                 text,
                 Rules.prefs(this).getString("wake_phrase", "Hey Priority"),
                 Rules.prefs(this).getBoolean("wake_enabled", false),
-                SystemClock.elapsedRealtime() < wakeUntil)
+                SystemClock.elapsedRealtime() < wakeUntil,
+                InstalledApps.speechAliases(this))
             : text.get(0));
   }
 
@@ -789,6 +917,9 @@ public class HandsFreeService extends Service implements RecognitionListener {
   @Override
   public void onDestroy() {
     closed = true;
+    if (live == this) live = null;
+    commandUiTicket.clear();
+    getSystemService(NotificationManager.class).cancel(52003);
     hideFloatingControl();
     Rules.prefs(this).unregisterOnSharedPreferenceChangeListener(readoutChanged);
     handler.removeCallbacksAndMessages(null);
