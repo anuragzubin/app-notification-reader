@@ -1,6 +1,6 @@
 # Priority Voice for Android
 
-[Download Priority Voice v2.3 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v2.3.apk)
+[Download Priority Voice v2.4 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v2.4.apk)
 
 Install over the previous version to retain your saved senders and settings. The signed APK is stored in `releases/`, with its checksum in `releases/SHA256SUMS`. This is a personal-testing debug build.
 
@@ -219,3 +219,14 @@ Recognition retries keep their requested delay instead of being rescheduled by t
 Use **Test opening WhatsApp / Gmail / Spotify** in Settings while Priority Voice is visible to check installed-app routing separately from speech recognition. Last app-command outcome remains visible in the status card. Package-scoped WhatsApp links are attempted directly rather than rejected solely by a preflight resolver. Background opening still requires the visible permitted floating control and remains subject to Samsung/Android restrictions; the notification fallback is retained. A recognizer beep alone does not confirm a wake-phrase match: wait for spoken “I'm listening” when using the phrase alone, then give the command.
 
 Compilation, JVM tests, and lint are workspace checks, not physical Samsung verification. The reported phone failure has not been reproduced on a device here.
+
+
+## Wake recognition provider and diagnostic test (v2.4)
+
+The normal phone speech provider is now the default for new and existing installations. Earlier versions preferred on-device recognition solely on the basis of API availability; that does not prove that the required language model returns usable results. An optional **Prefer on-device speech recognition** switch restores that preference; restart listening after changing it. The normal provider may require internet and follows its own privacy settings. This change does not prove that a particular Samsung recognition failure has been reproduced or resolved.
+
+Settings → Hands-free commands → **Test wake phrase** stops the live microphone session and opens the system's visible speech input screen. Say only the configured wake phrase. The result dialog shows up to five returned alternatives and whether any starts with the configured phrase. Test transcripts are not persisted. You may explicitly select **Use first result as phrase** to save that normalized result as the new phrase. Restart listening after testing. This test diagnoses the provider and phrase; it does not open apps, dictate messages, or send anything. If no words return, check the phone's microphone access, speech provider, language model, and network as applicable.
+
+Live sessions now request partial results too. If a provider recognizes a wake prefix in a partial result but returns an empty final result, No Match, or Speech Timeout, the app may acknowledge the wake phrase and ask for the command again. It never executes an app command, captures a draft, or confirms/sends from partial recognition. Evidence is scoped to the current recognition session and discarded on cancellation or a revised partial result without a wake prefix. A sticky **Last recognition** status distinguishes unmatched phrases and provider errors from ordinary ready/listening status without storing transcripts or drafts.
+
+Workspace verification: build, unit tests, and lint pass. Device validation remains necessary: test the phrase using the system input screen, then test a live wake acknowledgement and app command with the app visible, followed by background opening with the permitted floating control. Recheck normal readouts and call pauses while listening is active.

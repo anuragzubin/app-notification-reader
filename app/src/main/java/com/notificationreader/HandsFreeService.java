@@ -24,6 +24,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
   private long wakeUntil;
   private boolean listenScheduled, systemRecognizer, wakeAcknowledgement;
   private int recognizerGeneration;
+  private final WakeEvidence wakeEvidence = new WakeEvidence();
   private android.view.View floatingControl;
 
   private void showFloatingControl() {
@@ -174,7 +175,8 @@ public class HandsFreeService extends Service implements RecognitionListener {
   @Override
   public void onCreate() {
     super.onCreate();
-    Rules.prefs(this).edit().remove("hands_free_error").apply();
+    Rules.prefs(this).edit().remove("hands_free_error").remove("last_recognition_status").apply();
+    systemRecognizer = !Rules.prefs(this).getBoolean("prefer_device_recognition", false);
     NotificationManager manager = getSystemService(NotificationManager.class);
     manager.createNotificationChannel(
         new NotificationChannel(
@@ -310,8 +312,9 @@ public class HandsFreeService extends Service implements RecognitionListener {
                 RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
             .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
-            .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false);
+            .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
     try {
+      wakeEvidence.reset();
       listening = true;
       lastResult = SystemClock.elapsedRealtime();
       if (recognizer == null) createRecognizer();
@@ -359,7 +362,9 @@ public class HandsFreeService extends Service implements RecognitionListener {
 
           public void onEndOfSpeech() {}
 
-          public void onPartialResults(Bundle b) {}
+          public void onPartialResults(Bundle b) {
+            if (current()) HandsFreeService.this.onPartialResults(b);
+          }
 
           public void onEvent(int t, Bundle b) {}
         });
@@ -377,6 +382,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
   private void cancelRecognition() {
     handler.removeCallbacks(listenTask);
     listenScheduled = false;
+    wakeEvidence.reset();
     listening = false;
     if (recognizer != null) recognizer.cancel();
   }
@@ -428,6 +434,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
       String command =
           VoiceCommand.afterWake(words, Rules.prefs(this).getString("wake_phrase", "Hey Priority"));
       if (command != null) {
+        recognitionStatus("Wake phrase matched.");
         words = command;
         wakeUntil = SystemClock.elapsedRealtime() + 15000;
         if (command.isEmpty()) {
@@ -436,6 +443,9 @@ public class HandsFreeService extends Service implements RecognitionListener {
           return;
         }
       } else if (SystemClock.elapsedRealtime() >= wakeUntil) {
+        recognitionStatus(
+            "Words received, but wake phrase not matched. Use Test wake phrase to see what Android"
+                + " hears.");
         notice(
             "Speech detected, but wake phrase not matched. Say "
                 + Rules.prefs(this).getString("wake_phrase", "Hey Priority")
@@ -577,9 +587,15 @@ public class HandsFreeService extends Service implements RecognitionListener {
       return;
     }
     errors = 0;
+    boolean partialWake = wakeEvidence.consume();
     releaseMicrophone();
     ArrayList<String> text = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
     if (text == null || text.isEmpty()) {
+      if (partialWake && flow.stage == HandsFreeFlow.Stage.COMMAND) {
+        handle(Rules.prefs(this).getString("wake_phrase", "Hey Priority"));
+        return;
+      }
+      recognitionStatus("The speech provider returned no words.");
       scheduleListen(800);
       return;
     }
@@ -596,7 +612,18 @@ public class HandsFreeService extends Service implements RecognitionListener {
   @Override
   public void onError(int error) {
     if (!listening || closed) return;
+    boolean partialWake = wakeEvidence.consume();
     releaseMicrophone();
+    if ((error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
+        && partialWake
+        && flow.stage == HandsFreeFlow.Stage.COMMAND
+        && allowed()
+        && !readerSpeaking()) {
+      // Final transcription failed. Only acknowledge; never execute a partial app/send command.
+      handle(Rules.prefs(this).getString("wake_phrase", "Hey Priority"));
+      return;
+    }
+    recognitionStatus(recognitionError(error));
     if (!systemRecognizer
         && (error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED
             || error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE
@@ -679,7 +706,20 @@ public class HandsFreeService extends Service implements RecognitionListener {
   public void onEndOfSpeech() {}
 
   @Override
-  public void onPartialResults(Bundle b) {}
+  public void onPartialResults(Bundle b) {
+    if (listening
+        && !speaking
+        && flow.stage == HandsFreeFlow.Stage.COMMAND
+        && allowed()
+        && !readerSpeaking())
+      wakeEvidence.partial(
+          b.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION),
+          Rules.prefs(this).getString("wake_phrase", "Hey Priority"));
+  }
+
+  private void recognitionStatus(String message) {
+    Rules.prefs(this).edit().putString("last_recognition_status", message).apply();
+  }
 
   @Override
   public void onEvent(int type, Bundle b) {}

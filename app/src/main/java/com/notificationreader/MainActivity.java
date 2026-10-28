@@ -49,7 +49,8 @@ public class MainActivity extends Activity {
         if ("hands_free_running".equals(key)
             || "hands_free_error".equals(key)
             || "hands_free_status".equals(key)
-            || "last_launch_status".equals(key)) updateHandsFreeStatus();
+            || "last_launch_status".equals(key)
+            || "last_recognition_status".equals(key)) updateHandsFreeStatus();
       };
 
   private int pad(int x) {
@@ -575,6 +576,18 @@ public class MainActivity extends Activity {
     automatic.setOnCheckedChangeListener(
         (button, checked) ->
             Rules.prefs(this).edit().putBoolean("auto_reply_offer", checked).apply());
+    Switch provider =
+        toggle(
+            card,
+            "Prefer on-device speech recognition",
+            "Off uses your normal phone speech provider, which may need internet. Restart listening"
+                + " after changing.",
+            "",
+            Rules.prefs(this).getBoolean("prefer_device_recognition", false));
+    provider.setOnCheckedChangeListener(
+        (button, checked) ->
+            Rules.prefs(this).edit().putBoolean("prefer_device_recognition", checked).apply());
+    action(card, "Test wake phrase", false, v -> testWakePhrase());
     Switch wake =
         toggle(
             card,
@@ -705,8 +718,92 @@ public class MainActivity extends Activity {
                 .getString(
                     "hands_free_status", "Session active · check the microphone notification.")
             : Rules.prefs(this).getString("hands_free_error", "Listening is off."));
+    String recognition = Rules.prefs(this).getString("last_recognition_status", "");
+    if (!recognition.isEmpty()) handsFreeStatus.append("\nLast recognition: " + recognition);
     String launch = Rules.prefs(this).getString("last_launch_status", "");
     if (!launch.isEmpty()) handsFreeStatus.append("\nLast app command: " + launch);
+  }
+
+  private void testWakePhrase() {
+    stopService(new Intent(this, HandsFreeService.class));
+    if (tts != null) tts.stop();
+    if (testRing != null) testRing.stop();
+    Intent test =
+        new Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(
+                android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
+            .putExtra(android.speech.RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+            .putExtra(
+                android.speech.RecognizerIntent.EXTRA_PROMPT,
+                "Say only your wake phrase: "
+                    + Rules.prefs(this).getString("wake_phrase", "Hey Priority"));
+    AudioSessions.hold(this, "wake-phrase-test");
+    try {
+      startActivityForResult(test, 77);
+    } catch (android.content.ActivityNotFoundException | SecurityException e) {
+      AudioSessions.release(this, "wake-phrase-test");
+      new AlertDialog.Builder(this)
+          .setTitle("Speech input unavailable")
+          .setMessage(
+              "No usable system speech input screen was found. Check Settings → General management"
+                  + " → Keyboard list and default → Voice input, and install or enable a speech"
+                  + " provider.")
+          .setPositiveButton("OK", null)
+          .show();
+    }
+  }
+
+  @Override
+  protected void onActivityResult(int code, int result, Intent data) {
+    super.onActivityResult(code, result, data);
+    if (code != 77) return;
+    AudioSessions.release(this, "wake-phrase-test");
+    java.util.ArrayList<String> words =
+        data == null
+            ? null
+            : data.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS);
+    if (result != RESULT_OK || words == null || words.isEmpty()) {
+      new AlertDialog.Builder(this)
+          .setTitle("No words returned")
+          .setMessage(
+              "The phone's speech input returned no words. Check microphone access, your voice"
+                  + " input provider and its English language support. Listening is stopped;"
+                  + " restart it after testing.")
+          .setPositiveButton("OK", null)
+          .show();
+      return;
+    }
+    String phrase = Rules.prefs(this).getString("wake_phrase", "Hey Priority");
+    boolean matched = false;
+    StringBuilder heard = new StringBuilder();
+    for (int i = 0; i < Math.min(words.size(), 5); i++) {
+      String candidate = words.get(i);
+      heard.append("• ").append(candidate).append("\n");
+      if (VoiceCommand.afterWake(candidate, phrase) != null) matched = true;
+    }
+    String first = VoiceCommand.normalize(words.get(0));
+    AlertDialog.Builder dialog =
+        new AlertDialog.Builder(this)
+            .setTitle(matched ? "Wake phrase recognized" : "Wake phrase did not match")
+            .setMessage(
+                "Android heard:\n"
+                    + heard
+                    + "\nConfigured phrase: "
+                    + phrase
+                    + "\n\n"
+                    + "Listening is stopped. Start it again after this test. These test words are"
+                    + " not saved unless you choose to use the first result as your phrase.")
+            .setPositiveButton("Done", null);
+    if (first.contains(" ") && first.length() >= 3 && first.length() <= 50)
+      dialog.setNeutralButton(
+          "Use first result as phrase",
+          (d, w) -> {
+            Rules.prefs(this).edit().putString("wake_phrase", first).apply();
+            Toast.makeText(this, "Wake phrase saved: " + first, Toast.LENGTH_LONG).show();
+          });
+    dialog.show();
   }
 
   private void startHandsFree() {
