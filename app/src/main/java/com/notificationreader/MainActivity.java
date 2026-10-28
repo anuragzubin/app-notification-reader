@@ -193,6 +193,7 @@ public class MainActivity extends Activity {
         .remove("reply_composing_until")
         .remove("hands_free_composing_until")
         .apply();
+    AppReminders.scheduleAll(this);
     initializeTestSpeech();
     testCallMonitor =
         new CallMonitor(
@@ -570,7 +571,8 @@ public class MainActivity extends Activity {
         toggle(
             card,
             "Ask after WhatsApp readouts",
-            "Offer a reply after the contact's latest readout, then listen for Yes or No.",
+            "After readouts, ask now if unlocked or wait until you unlock. Then listen for Yes or"
+                + " No.",
             "",
             Rules.prefs(this).getBoolean("auto_reply_offer", true));
     automatic.setOnCheckedChangeListener(
@@ -632,10 +634,11 @@ public class MainActivity extends Activity {
     copy(
         card,
         "Allowed apps",
-        "Say Open Spotify, Open WhatsApp, Open Gmail, or Open WhatsApp chat with Anita. A saved"
-            + " chat needs a full phone number with +country code. Opening a chat does not send a"
-            + " message.");
-    for (String app : new String[] {"Spotify", "WhatsApp", "Gmail"}) {
+        "Say Open followed by WhatsApp, Gmail, Spotify, Traya, Deepstash or Duolingo; or say Open"
+            + " WhatsApp chat with Anita. A saved chat needs a full phone number with +country"
+            + " code. Opening a chat does not send a message.");
+    for (AppCatalog.App item : AppCatalog.ALL) {
+      String app = item.label;
       Switch permitted =
           toggle(
               card,
@@ -676,7 +679,8 @@ public class MainActivity extends Activity {
     handsFreeStatus = label("", 14, R.color.accent, true);
     card.addView(handsFreeStatus);
     updateHandsFreeStatus();
-    for (String app : new String[] {"WhatsApp", "Gmail", "Spotify"}) {
+    for (AppCatalog.App item : AppCatalog.ALL) {
+      String app = item.label;
       action(
           card,
           "Test opening " + app,
@@ -700,11 +704,13 @@ public class MainActivity extends Activity {
     gap(card, 10);
     card.addView(
         label(
-            "Requires an unlocked phone, a saved WhatsApp contact with Reply by voice on, and a"
-                + " live Reply notification after a readout. Sending still requires a live"
-                + " notification Reply action; opening a chat alone cannot send a message. Say"
-                + " “Cancel” to discard or “Stop listening” to finish. Listening uses battery; your"
-                + " speech provider may use the network. No recordings are saved by this app.",
+            "Readouts still work while locked. Start this listening session before locking; valid"
+                + " reply offers wait until you unlock. Voice replies need a saved WhatsApp contact"
+                + " with Reply by voice on and a live Reply notification after a readout. Sending"
+                + " still requires a live notification Reply action; opening a chat alone cannot"
+                + " send a message. Say “Cancel” to discard or “Stop listening” to finish."
+                + " Listening uses battery; your speech provider may use the network. No recordings"
+                + " are saved by this app.",
             13,
             R.color.muted,
             false));
@@ -936,7 +942,202 @@ public class MainActivity extends Activity {
             false));
   }
 
+  private void appRemindersDialog() {
+    LinearLayout box = column();
+    box.setPadding(pad(16), pad(8), pad(16), pad(16));
+    ScrollView scroll = new ScrollView(this);
+    scroll.addView(box);
+    AlertDialog dialog =
+        new AlertDialog.Builder(this)
+            .setTitle("Daily app reminders & links")
+            .setView(scroll)
+            .setPositiveButton("Done", null)
+            .create();
+    copy(
+        box,
+        "Only if not opened today",
+        "Each app has its own daily time. Usage access checks actual app opens, including manual"
+            + " opens. Reminders respect Alerts for all contacts, Quiet hours and Allowed apps. No"
+            + " usage history is saved or uploaded.");
+    box.addView(
+        label(
+            "Usage access: "
+                + (AppReminders.usageAllowed(this) ? "allowed" : "needed")
+                + " · Timing: "
+                + (AppReminders.precise(this)
+                    ? "precise alarms allowed"
+                    : "may be delayed by Android"),
+            13,
+            R.color.accent,
+            true));
+    action(
+        box,
+        "Allow Usage access",
+        false,
+        v -> {
+          dialog.dismiss();
+          openReminderPermission(
+              new Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
+                  .setData(android.net.Uri.parse("package:" + getPackageName())));
+        });
+    if (android.os.Build.VERSION.SDK_INT >= 31)
+      action(
+          box,
+          "Allow precise reminder times",
+          false,
+          v -> {
+            dialog.dismiss();
+            openReminderPermission(
+                new Intent(
+                    Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                    android.net.Uri.parse("package:" + getPackageName())));
+          });
+    box.addView(
+        label(
+            "After granting access, return here and enable each reminder. When precise alarms are"
+                + " unavailable, Android may deliver reminders later. Force-stopping the app"
+                + " prevents alarms until it is opened again.",
+            12,
+            R.color.muted,
+            false));
+    String error = Rules.prefs(this).getString("reminder_error", "");
+    if (!error.isEmpty()) box.addView(label(error, 12, R.color.muted, false));
+    for (AppCatalog.App app : AppCatalog.ALL) {
+      LinearLayout appCard = card(box);
+      String pkg = InstalledApps.packageFor(this, app);
+      copy(
+          appCard,
+          app.label,
+          pkg == null
+              ? "App not linked. Install it or choose the installed app below."
+              : "Linked to " + pkg);
+      action(
+          appCard,
+          "Choose installed app",
+          false,
+          v ->
+              chooseInstalledApp(
+                  app,
+                  () -> {
+                    dialog.dismiss();
+                    appRemindersDialog();
+                  }));
+      Switch enabled =
+          toggle(
+              appCard,
+              "Daily reminder",
+              "Remind only if this app has not been opened today.",
+              app.label,
+              AppReminders.enabled(this, app));
+      enabled.setOnCheckedChangeListener(
+          (button, checked) -> {
+            if (checked
+                && (!AppReminders.usageAllowed(this)
+                    || InstalledApps.packageFor(this, app) == null)) {
+              button.setChecked(false);
+              Toast.makeText(
+                      this,
+                      "Allow Usage access and link the installed app, then enable its reminder.",
+                      Toast.LENGTH_LONG)
+                  .show();
+              return;
+            }
+            if (checked
+                && android.os.Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+              button.setChecked(false);
+              requestPermissions(new String[] {android.Manifest.permission.POST_NOTIFICATIONS}, 78);
+              return;
+            }
+            Rules.prefs(this).edit().putBoolean("reminder_enabled:" + app.id, checked).apply();
+            if (!checked) AppReminders.cancelNotice(this, app);
+            AppReminders.schedule(this, app);
+          });
+      Button time =
+          action(
+              appCard,
+              "Time · " + QuietHours.time(this, AppReminders.minute(this, app)),
+              false,
+              null);
+      time.setOnClickListener(
+          v -> {
+            int minute = AppReminders.minute(this, app);
+            new android.app.TimePickerDialog(
+                    this,
+                    (picker, hour, min) -> {
+                      int value = hour * 60 + min;
+                      Rules.prefs(this).edit().putInt("reminder_minute:" + app.id, value).apply();
+                      AppReminders.schedule(this, app);
+                      time.setText("Time · " + QuietHours.time(this, value));
+                    },
+                    minute / 60,
+                    minute % 60,
+                    android.text.format.DateFormat.is24HourFormat(this))
+                .show();
+          });
+    }
+    dialog.show();
+  }
+
+  private void openReminderPermission(Intent intent) {
+    try {
+      startActivity(intent);
+    } catch (android.content.ActivityNotFoundException | SecurityException e) {
+      Toast.makeText(
+              this,
+              "Open Android Settings → Apps → Special access to grant this permission.",
+              Toast.LENGTH_LONG)
+          .show();
+    }
+  }
+
+  private void chooseInstalledApp(AppCatalog.App app, Runnable refresh) {
+    android.content.pm.PackageManager pm = getPackageManager();
+    java.util.TreeMap<String, String> choices =
+        new java.util.TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+    for (android.content.pm.ResolveInfo info : InstalledApps.launchers(this)) {
+      String pkg = info.activityInfo.packageName;
+      if (pkg.equals(getPackageName())) continue;
+      choices.put(info.loadLabel(pm).toString() + "\n" + pkg, pkg);
+    }
+    java.util.ArrayList<String> names = new java.util.ArrayList<>(),
+        packages = new java.util.ArrayList<>();
+    names.add("Use automatic detection");
+    packages.add("");
+    for (java.util.Map.Entry<String, String> entry : choices.entrySet()) {
+      if (packages.contains(entry.getValue())) continue;
+      names.add(entry.getKey());
+      packages.add(entry.getValue());
+    }
+    new AlertDialog.Builder(this)
+        .setTitle("Select installed " + app.label)
+        .setItems(
+            names.toArray(new String[0]),
+            (d, which) -> {
+              if (which == 0) Rules.prefs(this).edit().remove("app_package:" + app.id).apply();
+              else
+                Rules.prefs(this)
+                    .edit()
+                    .putString("app_package:" + app.id, packages.get(which))
+                    .apply();
+              AppReminders.cancelNotice(this, app);
+              AppReminders.schedule(this, app);
+              refresh.run();
+            })
+        .setNegativeButton("Cancel", null)
+        .show();
+  }
+
   private void preferences() {
+    section("Your apps");
+    LinearLayout apps = card(layout);
+    copy(
+        apps,
+        "Daily reminders & installed apps",
+        "Set a separate daily time for WhatsApp, Gmail, Spotify, Traya, Deepstash and Duolingo."
+            + " Remind only when you have not opened the app today.");
+    action(apps, "Daily app reminders & app links", true, v -> appRemindersDialog());
     handsFreeCard();
     quietHoursCard();
     section("Connections");
@@ -1362,6 +1563,12 @@ public class MainActivity extends Activity {
                 Toast.LENGTH_LONG)
             .show();
     }
+    if (code == 78)
+      Toast.makeText(
+              this,
+              "Return to Daily app reminders and enable the reminders you want.",
+              Toast.LENGTH_LONG)
+          .show();
     if (code == 73) {
       if (testCallMonitor != null) testCallMonitor.start();
       Rules.prefs(this).edit().putLong("refresh_call_monitor", System.nanoTime()).apply();

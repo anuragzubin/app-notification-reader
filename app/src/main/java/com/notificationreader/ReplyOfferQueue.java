@@ -25,6 +25,11 @@ final class ReplyOfferQueue {
   }
 
   Offer take(long now) {
+    return take(now, true);
+  }
+
+  Offer take(long now, boolean available) {
+    if (!available) return null;
     for (Offer e : new ArrayList<>(pending.values()))
       if (e.due <= now) {
         pending.remove(e.stream);

@@ -28,7 +28,9 @@ final class VoiceCommand {
     return normalize(speech)
         .replaceAll("\\bwhat s app\\b|\\bwhats app\\b|\\bwhat app\\b", "whatsapp")
         .replaceAll("\\bg mail\\b|\\bgoogle mail\\b", "gmail")
-        .replaceAll("\\bspot ify\\b", "spotify");
+        .replaceAll("\\bspot ify\\b", "spotify")
+        .replaceAll("\\bdeep stash\\b", "deepstash")
+        .replaceAll("\\bduo lingo\\b", "duolingo");
   }
 
   static String selectCommand(

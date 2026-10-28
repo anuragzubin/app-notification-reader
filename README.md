@@ -1,6 +1,6 @@
 # Priority Voice for Android
 
-[Download Priority Voice v2.4 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v2.4.apk)
+[Download Priority Voice v2.5 APK](https://github.com/anuragzubin/app-notification-reader/raw/refs/heads/main/releases/PriorityVoice-v2.5.apk)
 
 Install over the previous version to retain your saved senders and settings. The signed APK is stored in `releases/`, with its checksum in `releases/SHA256SUMS`. This is a personal-testing debug build.
 
@@ -230,3 +230,29 @@ Settings → Hands-free commands → **Test wake phrase** stops the live microph
 Live sessions now request partial results too. If a provider recognizes a wake prefix in a partial result but returns an empty final result, No Match, or Speech Timeout, the app may acknowledge the wake phrase and ask for the command again. It never executes an app command, captures a draft, or confirms/sends from partial recognition. Evidence is scoped to the current recognition session and discarded on cancellation or a revised partial result without a wake prefix. A sticky **Last recognition** status distinguishes unmatched phrases and provider errors from ordinary ready/listening status without storing transcripts or drafts.
 
 Workspace verification: build, unit tests, and lint pass. Device validation remains necessary: test the phrase using the system input screen, then test a live wake acknowledgement and app command with the app visible, followed by background opening with the permitted floating control. Recheck normal readouts and call pauses while listening is active.
+
+
+## Unlock-to-reply, six apps, and conditional daily reminders (v2.5)
+
+### Hands-free reply after unlocking
+
+Keep **Ask after WhatsApp readouts** enabled and the selected contact's **Reply by voice** switch on. Start the hands-free session while unlocked before putting the phone away. Notifications continue to read while locked. A valid reply offer from a completed readout is now retained during locking/call pauses instead of discarded. After unlocking and once calls/readouts have finished, the app asks “Do you want to reply to Anita?” Say Yes, dictate, hear the draft, and say Yes again to send. Wake recognition remains unlocked-only; unlocking does not secretly start a stopped microphone service.
+
+If the phone locks or a call begins during a reply conversation, the unsent draft is discarded and the still-valid reply can be offered again after unlocking/end of call. It never resumes at a send confirmation for a stale draft. Declined offers are not repeatedly prompted; a new message can create a new offer. This uses the existing WhatsApp notification Reply action, not the WhatsApp API. Notification dismissal, replacement, expired 15-minute routes, opt-out, or process death can invalidate the reply. “Send text to Anita” continues to need an active eligible Reply action; opening her chat alone does not grant a way to send a new message.
+
+### Allowed apps and installed-app links
+
+The six slots are **WhatsApp, Gmail, Spotify, Traya, Deepstash, Duolingo**, each with its own Allow switch. Say “Hey Priority, open Deepstash”, for example. “Deep stash” and “Duo lingo” speech spellings also resolve. Existing WhatsApp/Gmail/Spotify preference IDs are preserved. App labels/package variants differ: in **Settings → Daily app reminders & app links → Choose installed app**, explicitly link the corresponding installed app when automatic detection cannot find it. Traya resolves by its exact installed launcher label or your explicit selection rather than an unverified guessed package ID. The picker sees launchable apps using a scoped launcher query, without QUERY_ALL_PACKAGES or an accessibility service. Pick the intended app: a selected link defines where that slot opens and which package its reminder checks.
+
+### Daily reminders only when an app was not opened
+
+1. Open **Settings → Daily app reminders & app links**.
+2. Tap **Allow Usage access**, grant Priority Voice the Android Usage access special permission, and return to the reminder controls. This permission is required to determine manual app opens too; usage history is queried locally and not saved or uploaded.
+3. For each desired app, verify its installed-app link, choose its **Time**, and turn on **Daily reminder**. All reminder switches are initially off; changing a time saves it but does not turn its reminder on. Notification permission must also be allowed.
+4. Optionally grant **Allow precise reminder times** (Android Alarms & reminders access). Without it, the app uses inexact alarms and Android may delay delivery. Even permitted alarms remain subject to system/Doze throttling, particularly multiple reminders close together.
+
+At that app's time, the receiver checks local-day usage events for an activity resume in the linked package since midnight. It posts a notification only if that app has not been opened today. Tapping the notification opens the linked app; the app is never automatically launched by a reminder. A launch request is not treated as proof of an actual open. An app merely remaining on screen across midnight is not a new activity-resume event. Missing/revoked Usage access or an unavailable usage query does not count as proof of “not opened”; the reminder is skipped. Disabled/uninstalled/unlinked apps, denied notifications, the global alert switch, and Quiet hours suppress reminders too. No reminder readout/voice recording is started by an alarm.
+
+Each app can notify at most once per local calendar date. Reminders recur until that app's reminder switch is off. Existing reminder notifications expire at local midnight; disabling a reminder or changing its installed link clears its notification. Times use the phone's current timezone, and one-shot alarms are restored after reboot, app upgrade, clock/timezone changes, and exact-alarm grants. After a reboot the phone may need its first unlock. Android force-stop blocks alarms until the app is reopened. Quiet-hour/missing-permission/skipped reminders do not produce a catch-up burst; an alarm delivered on a later calendar date is dropped. Setting a time that has already passed schedules the next day.
+
+Validation covers the six-app allowlist and aliases, reply-queue retention through locked/unavailable periods and replacement/revocation, independent daily times, duplicate/stale/early delivery rejection, local midnight boundaries, and DST changes. Build, JVM tests, and lint are automated workspace checks; physical A54 validation of unlock conversations, usage-event delivery, reboot restoration, and alarms during Samsung battery restrictions remains required.

@@ -17,20 +17,14 @@ final class VoiceAppLauncher {
       app = "whatsapp";
       contact = target.substring("whatsapp chat of ".length());
     }
-    String packageName;
-    switch (app) {
-      case "spotify":
-        packageName = "com.spotify.music";
-        break;
-      case "whatsapp":
-        packageName = "com.whatsapp";
-        break;
-      case "gmail":
-        packageName = "com.google.android.gm";
-        break;
-      default:
-        return "You can open Spotify, WhatsApp, Gmail, or WhatsApp chat with a saved contact.";
-    }
+    AppCatalog.App selected = AppCatalog.find(app);
+    if (selected == null)
+      return "You can open " + AppCatalog.SPOKEN_LIST + ", or WhatsApp chat with a saved contact.";
+    String packageName = InstalledApps.packageFor(context, selected);
+    if (packageName == null)
+      return "Install "
+          + selected.label
+          + ", or choose its installed app under Daily app reminders and app links in Settings.";
     if (!Rules.prefs(context).getBoolean("open_" + app, true))
       return "Opening " + app + " is disabled in Settings.";
     Intent intent;

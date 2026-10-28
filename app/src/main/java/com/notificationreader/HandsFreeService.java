@@ -90,8 +90,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
             promptId = null;
             if (tts != null) tts.stop();
             speaking = false;
-            flow.reset();
-            offers.clear();
+            deferActiveReply();
             hold(false);
             notice("Paused · unlock your phone, end calls and enable alerts outside quiet hours.");
           }
@@ -141,11 +140,24 @@ public class HandsFreeService extends Service implements RecognitionListener {
   }
 
   private void collectOffer() {
-    if (!Rules.prefs(this).getBoolean("auto_reply_offer", true) || !allowed()) return;
+    if (!Rules.prefs(this).getBoolean("auto_reply_offer", true)
+        || !Rules.prefs(this).getBoolean("enabled", true)
+        || QuietHours.active(this)) return;
     String token = Rules.prefs(this).getString("reply_offer_token", "");
     ReplyRegistry.Target target = ReplyRegistry.get(this, token);
-    if (target != null && target.ready)
+    if (target != null && target.ready && !target.autoOffered)
       offers.add(target.stream, target.token, SystemClock.elapsedRealtime());
+  }
+
+  private void deferActiveReply() {
+    String token = flow.token;
+    flow.reset(); // Never resume or send an interrupted draft without a fresh conversation.
+    if (token != null) {
+      ReplyRegistry.deferOffer(this, token);
+      ReplyRegistry.Target target = ReplyRegistry.get(this, token);
+      if (target != null && target.ready)
+        offers.add(target.stream, target.token, SystemClock.elapsedRealtime());
+    }
   }
 
   private void discardInvalidOffers() {
@@ -162,12 +174,14 @@ public class HandsFreeService extends Service implements RecognitionListener {
         || flow.stage != HandsFreeFlow.Stage.COMMAND
         || !Rules.prefs(this).getBoolean("auto_reply_offer", true)) return;
     discardInvalidOffers();
-    ReplyOfferQueue.Offer next = offers.take(SystemClock.elapsedRealtime());
+    ReplyOfferQueue.Offer next =
+        offers.take(SystemClock.elapsedRealtime(), allowed() && !readerSpeaking());
     if (next == null) return;
     ReplyRegistry.Target target = ReplyRegistry.get(this, next.token);
     if (target == null || !target.ready) return;
     attempts = 0;
     wakeUntil = 0;
+    target.autoOffered = true;
     flow.offer(target.token, target.label);
     prompt("Do you want to reply to " + target.label + "? Say Yes or No.");
   }
@@ -206,12 +220,14 @@ public class HandsFreeService extends Service implements RecognitionListener {
                 promptId = null;
                 if (tts != null) tts.stop();
                 speaking = false;
-                flow.reset();
-                offers.clear();
+                deferActiveReply();
                 hold(false);
               }
             });
     calls.start();
+    if (Rules.prefs(this).getBoolean("auto_reply_offer", true))
+      for (ReplyRegistry.Target target : ReplyRegistry.pendingOffers(this))
+        offers.add(target.stream, target.token, SystemClock.elapsedRealtime());
     if (allowed()) showFloatingControl();
     if (!SpeechRecognizer.isRecognitionAvailable(this)) {
       fail("No speech recognition provider is installed. Check Android voice input settings.");
@@ -490,7 +506,7 @@ public class HandsFreeService extends Service implements RecognitionListener {
       }
       String spoken = VoiceCommand.recipient(words);
       if (spoken == null) {
-        notice("Command not understood. Try Open WhatsApp, Open Gmail, or Open Spotify.");
+        notice("Command not understood. Try Open followed by an allowed app name.");
         prompt(
             "I didn't understand the command. Please say the wake phrase and Open WhatsApp, Open"
                 + " Gmail, or Open Spotify.");

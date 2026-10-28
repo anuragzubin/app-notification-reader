@@ -16,7 +16,7 @@ final class ReplyRegistry {
     final PendingIntent intent;
     final RemoteInput input;
     final long created = android.os.SystemClock.elapsedRealtime();
-    boolean ready, sending;
+    boolean ready, sending, autoOffered;
 
     Target(
         String event,
@@ -144,6 +144,18 @@ final class ReplyRegistry {
       manager.notify(t.notificationId(), prompt);
       return;
     }
+  }
+
+  static synchronized List<Target> pendingOffers(Context c) {
+    List<Target> pending = new ArrayList<>();
+    for (Target t : new ArrayList<>(targets.values()))
+      if (t.ready && !t.autoOffered && get(c, t.token) != null) pending.add(t);
+    return pending;
+  }
+
+  static synchronized void deferOffer(Context c, String token) {
+    Target t = get(c, token);
+    if (t != null && t.ready) t.autoOffered = false;
   }
 
   static synchronized void send(Context c, String token, String draft)
